@@ -228,17 +228,25 @@ class ConnectionBase(AnsiblePlugin):
         pass
 
     def connection_lock(self) -> None:
-        if fcntl is None:
-            # Windows: fd inheritance across spawn is not reliable; cross-worker
-            # serialization will be reintroduced via multiprocessing.Manager().Lock()
-            # in a later Phase 1 commit. WinRM/PSRP plugins rarely invoke this.
+        mp_lock = getattr(self._play_context, 'connection_lock', None)
+        if mp_lock is not None:
+            display.vvvv('CONNECTION: pid %d waiting for mp lock' % os.getpid(), host=self._play_context.remote_addr)
+            mp_lock.acquire()
+            display.vvvv('CONNECTION: pid %d acquired mp lock' % os.getpid(), host=self._play_context.remote_addr)
             return
+        if fcntl is None:
+            return  # no lock mechanism available
         f = self._play_context.connection_lockfd
         display.vvvv('CONNECTION: pid %d waiting for lock on %d' % (os.getpid(), f), host=self._play_context.remote_addr)
         fcntl.lockf(f, fcntl.LOCK_EX)
         display.vvvv('CONNECTION: pid %d acquired lock on %d' % (os.getpid(), f), host=self._play_context.remote_addr)
 
     def connection_unlock(self) -> None:
+        mp_lock = getattr(self._play_context, 'connection_lock', None)
+        if mp_lock is not None:
+            mp_lock.release()
+            display.vvvv('CONNECTION: pid %d released mp lock' % os.getpid(), host=self._play_context.remote_addr)
+            return
         if fcntl is None:
             return
         f = self._play_context.connection_lockfd

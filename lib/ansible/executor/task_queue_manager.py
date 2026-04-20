@@ -203,6 +203,16 @@ class TaskQueueManager:
         # plugins for inter-process locking.
         self._connection_lockfile = tempfile.TemporaryFile()
 
+        # Under spawn (Windows), workers do not inherit open file descriptors,
+        # so the connection_lockfile fd is meaningless in the child. Provide a
+        # Manager()-backed Lock that survives spawn pickling instead. Under fork,
+        # fd inheritance is used and this stays None.
+        self._mp_manager = None
+        self._connection_lock = None
+        if sys.platform == 'win32':
+            self._mp_manager = multiprocessing_context.Manager()
+            self._connection_lock = self._mp_manager.Lock()
+
         self._workers: list[WorkerProcess | None] = []
 
         # signal handlers to propagate signals to workers
@@ -354,7 +364,7 @@ class TaskQueueManager:
             loader=self._loader,
         )
 
-        play_context = PlayContext(new_play, self.passwords, self._connection_lockfile.fileno())
+        play_context = PlayContext(new_play, self.passwords, self._connection_lockfile.fileno(), connection_lock=self._connection_lock)
 
         for callback_plugin in self._callback_plugins:
             callback_plugin.set_play_context(play_context)
@@ -419,6 +429,12 @@ class TaskQueueManager:
         self.terminate()
         self._final_q.close()
         self._cleanup_processes()
+        if self._mp_manager is not None:
+            try:
+                self._mp_manager.shutdown()
+            except Exception:
+                pass
+            self._mp_manager = None
         # We no longer flush on every write in ``Display.display``
         # just ensure we've flushed during cleanup
         sys.stdout.flush()

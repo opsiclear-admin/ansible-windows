@@ -111,7 +111,7 @@ class PlayContext(Base):
     # "PlayContext.force_handlers should not be used, the calling code should be using play itself instead"
     force_handlers = FieldAttribute(isa='bool', default=False)
 
-    def __init__(self, play=None, passwords=None, connection_lockfd=None):
+    def __init__(self, play=None, passwords=None, connection_lockfd=None, connection_lock=None):
         # Note: play is really not optional.  The only time it could be omitted is when we create
         # a PlayContext just so we can invoke its deserialize method to load it from a serialized
         # data source.
@@ -129,8 +129,12 @@ class PlayContext(Base):
         self.prompt = ''
         self.success_key = ''
 
-        # a file descriptor to be used during locking operations
+        # a file descriptor to be used during locking operations (fork-inherited fd)
         self.connection_lockfd = connection_lockfd
+
+        # a multiprocessing.Manager().Lock proxy for spawn workers where the
+        # connection_lockfd cannot be inherited. Set by TaskQueueManager on Windows.
+        self.connection_lock = connection_lock
 
         # set options before play to allow play to override them
         if context.CLIARGS:
