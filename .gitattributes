@@ -1,1 +1,8 @@
 .github/ export-ignore
+
+# Windows-controller: AnsiballZ wrapper sources ship to POSIX targets.
+# Enforce LF regardless of core.autocrlf on Windows dev clones.
+lib/ansible/_internal/_ansiballz/**       text eol=lf
+lib/ansible/executor/powershell/**        text eol=crlf
+lib/ansible/module_utils/**.py            text eol=lf
+lib/ansible/modules/**.py                 text eol=lf

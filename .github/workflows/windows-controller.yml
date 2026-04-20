@@ -1,0 +1,79 @@
+name: windows-controller
+
+on:
+  push:
+    branches: [windows-controller]
+  pull_request:
+    branches: [windows-controller]
+  workflow_dispatch:
+
+jobs:
+  import-smoke:
+    name: import smoke (py${{ matrix.python }})
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.12', '3.13']
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install ansible-core (editable)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      # Phase 0: this is EXPECTED to fail on an untouched devel branch.
+      # The first failure we expect to see is either:
+      #   - ImportError on os.register_at_fork (utils/display.py:241), or
+      #   - ValueError: cannot find context for 'fork' (utils/multiprocessing.py:15)
+      # That failure signature is the Phase 1 starting point.
+      # Remove `continue-on-error` once Phase 1 lands.
+      - name: Import ansible (expected to fail until Phase 1 lands)
+        continue-on-error: true
+        run: |
+          python -c "import ansible"
+          python -c "import ansible.cli"
+          python -c "import ansible.executor.task_queue_manager"
+
+      - name: Record Python + platform info
+        run: |
+          python --version
+          python -c "import sys, platform; print(sys.platform, platform.platform())"
+          python -c "import multiprocessing; print('available ctxs:', multiprocessing.get_all_start_methods())"
+
+  linux-regression:
+    name: linux regression (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install ansible-core (editable)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Import smoke (must pass — baseline)
+        run: |
+          python -c "import ansible"
+          python -c "import ansible.cli"
+          python -c "import ansible.executor.task_queue_manager"
+
+      - name: ansible --version
+        run: ansible --version
