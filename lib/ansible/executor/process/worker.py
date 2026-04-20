@@ -105,7 +105,8 @@ class WorkerProcess(multiprocessing_context.Process):  # type: ignore[name-defin
         signal.signal(signum, signal.SIG_DFL)
 
         try:
-            os.killpg(self.pid, signum)
+            if hasattr(os, 'killpg'):
+                os.killpg(self.pid, signum)
             os.kill(self.pid, signum)
         except OSError as e:
             if e.errno != errno.ESRCH:
@@ -153,10 +154,16 @@ class WorkerProcess(multiprocessing_context.Process):  # type: ignore[name-defin
         with stdio fds.
         """
         try:
-            os.setsid()
+            if hasattr(os, 'setsid'):
+                os.setsid()
+            # Build stdin open mode. O_NONBLOCK is POSIX-only and is a no-op on the
+            # Windows nul device anyway.
+            stdin_mode = os.O_RDWR
+            if hasattr(os, 'O_NONBLOCK') and sys.platform != 'win32':
+                stdin_mode |= os.O_NONBLOCK
             # Create new fds for stdin/stdout/stderr, but also capture python uses of sys.stdout/stderr
             for fds, mode in (
-                    ((STDIN_FILENO,), os.O_RDWR | os.O_NONBLOCK),
+                    ((STDIN_FILENO,), stdin_mode),
                     ((STDOUT_FILENO, STDERR_FILENO), os.O_WRONLY),
             ):
                 stdio = os.open(os.devnull, mode)
