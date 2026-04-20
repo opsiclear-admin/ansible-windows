@@ -29,12 +29,24 @@ import __main__
 import atexit
 import dataclasses as _dataclasses
 import errno
-import grp
-import fcntl
 import locale
 import os
-import pwd
 import platform
+
+try:
+    import grp
+except ImportError:
+    grp = None  # type: ignore[assignment]
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None  # type: ignore[assignment]
+
+try:
+    import pwd
+except ImportError:
+    pwd = None  # type: ignore[assignment]
 import re
 import select
 import selectors

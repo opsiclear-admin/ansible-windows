@@ -4,12 +4,18 @@
 from __future__ import annotations
 
 import multiprocessing
+import sys
 
-# Explicit multiprocessing context using the fork start method
-# This exists as a compat layer now that Python3.8 has changed the default
-# start method for macOS to ``spawn`` which is incompatible with our
-# code base currently
+# Explicit multiprocessing context.
 #
-# This exists in utils to allow it to be easily imported into various places
-# without causing circular import or dependency problems
-context = multiprocessing.get_context('fork')
+# POSIX: 'fork' — ansible's executor historically assumes fork copy-on-write
+# semantics for handing off loaders, inventory, and the RPC manager to workers.
+#
+# Windows: 'spawn' — fork is unavailable. The windows-controller branch is
+# rewriting the worker handoff to survive spawn (explicit bootstrap + re-init
+# of plugin loaders in the child). Until that lands, import-level code paths
+# work but multi-worker execution will break on pickling.
+#
+# This lives in utils so it can be imported widely without circular deps.
+_start_method = 'spawn' if sys.platform == 'win32' else 'fork'
+context = multiprocessing.get_context(_start_method)

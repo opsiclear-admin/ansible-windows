@@ -30,7 +30,8 @@ display = Display()
 
 # Tries to determine if a path is inside a role, last dir must be 'tasks'
 # this is not perfect but people should really avoid 'tasks' dirs outside roles when using Ansible.
-RE_TASKS = re.compile('(?:^|%s)+tasks%s?$' % (os.path.sep, os.path.sep))
+_sep = re.escape(os.path.sep)
+RE_TASKS = re.compile('(?:^|%s)+tasks%s?$' % (_sep, _sep))
 
 
 class DataLoader:

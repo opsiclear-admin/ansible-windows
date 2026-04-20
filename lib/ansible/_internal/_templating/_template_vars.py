@@ -2,8 +2,13 @@ from __future__ import annotations as _annotations
 
 import datetime as _datetime
 import os as _os
-import pwd as _pwd
+import platform as _platform
 import time as _time
+
+try:
+    import pwd as _pwd
+except ImportError:
+    _pwd = None  # type: ignore[assignment]
 
 from ansible import constants as _constants
 from ansible.module_utils._internal import _datatag
@@ -28,13 +33,16 @@ def generate_ansible_template_vars(
 
     template_uid: int | str
 
-    try:
-        template_uid = _pwd.getpwuid(template_stat.st_uid).pw_name
-    except KeyError:
+    if _pwd is not None:
+        try:
+            template_uid = _pwd.getpwuid(template_stat.st_uid).pw_name
+        except KeyError:
+            template_uid = template_stat.st_uid
+    else:
         template_uid = template_stat.st_uid
 
     temp_vars = dict(
-        template_host=_os.uname()[1],
+        template_host=_platform.node(),
         template_path=path,
         template_mtime=_datetime.datetime.fromtimestamp(template_stat.st_mtime),
         template_uid=template_uid,

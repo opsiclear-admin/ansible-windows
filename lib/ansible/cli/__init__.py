@@ -43,7 +43,13 @@ def check_blocking_io():
         except Exception:
             continue  # not a real file handle, such as during the import sanity test
 
-        if not os.get_blocking(fd):
+        try:
+            blocking = os.get_blocking(fd)
+        except OSError:
+            # Windows console handles don't support O_NONBLOCK; stdio is blocking by default.
+            continue
+
+        if not blocking:
             handles.append(getattr(handle, 'name', None) or '#%s' % fd)
 
     if handles:
@@ -66,8 +72,14 @@ def initialize_locale():
             'ERROR: Ansible could not initialize the preferred locale: %s' % e
         )
 
-    if not encoding or encoding.lower() not in ('utf-8', 'utf8'):
-        raise SystemExit('ERROR: Ansible requires the locale encoding to be UTF-8; Detected %s.' % encoding)
+    utf8_locale = bool(encoding) and encoding.lower() in ('utf-8', 'utf8')
+    # On Windows, locale.getlocale() reflects the system ANSI codepage (e.g. cp1252)
+    # even when Python is running in UTF-8 mode. Accept UTF-8 mode as sufficient.
+    if not utf8_locale and not sys.flags.utf8_mode:
+        raise SystemExit(
+            'ERROR: Ansible requires the locale encoding to be UTF-8; Detected %s. '
+            'On Windows, set PYTHONUTF8=1 or use a UTF-8-mode Python build.' % encoding
+        )
 
     fs_enc = sys.getfilesystemencoding()
     if fs_enc.lower() != 'utf-8':

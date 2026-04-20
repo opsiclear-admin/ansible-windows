@@ -30,19 +30,29 @@ else:
 import collections.abc as c
 import codecs
 import ctypes.util
-import fcntl
 import getpass
 import io
 import logging
 import os
 import secrets
+import shutil
 import subprocess
 import sys
-import termios
 import threading
 import time
-import tty
 import typing as t
+
+if sys.platform == 'win32':
+    # fcntl/termios/tty are POSIX-only. On Windows, interactive prompt and
+    # terminal-size ioctl paths fall back to stdlib equivalents or raise
+    # AnsiblePromptNoninteractive. See windows-controller/PLAN.md Phase 2.
+    fcntl = None  # type: ignore[assignment]
+    termios = None  # type: ignore[assignment]
+    tty = None  # type: ignore[assignment]
+else:
+    import fcntl
+    import termios
+    import tty
 
 from functools import wraps
 from struct import unpack, pack
@@ -65,11 +75,45 @@ if t.TYPE_CHECKING:
     # avoid circular import at runtime
     from ansible.executor.task_queue_manager import FinalQueue
 
-_LIBC = ctypes.cdll.LoadLibrary(ctypes.util.find_library('c'))
-# Set argtypes, to avoid segfault if the wrong type is provided,
-# restype is assumed to be c_int
-_LIBC.wcwidth.argtypes = (ctypes.c_wchar,)
-_LIBC.wcswidth.argtypes = (ctypes.c_wchar_p, ctypes.c_int)
+_libc_name = ctypes.util.find_library('c')
+if _libc_name:
+    _LIBC = ctypes.cdll.LoadLibrary(_libc_name)
+    # Set argtypes, to avoid segfault if the wrong type is provided,
+    # restype is assumed to be c_int
+    _LIBC.wcwidth.argtypes = (ctypes.c_wchar,)
+    _LIBC.wcswidth.argtypes = (ctypes.c_wchar_p, ctypes.c_int)
+else:
+    # Windows (no POSIX libc available). Provide a pure-Python shim using
+    # unicodedata.east_asian_width. Approximation — not byte-identical to
+    # glibc/musl wcwidth, but sufficient for output-width estimation.
+    import unicodedata as _unicodedata
+
+    class _LibcWcWidthShim:
+        @staticmethod
+        def wcwidth(c: str) -> int:
+            if not c:
+                return 0
+            ch = c[0]
+            cat = _unicodedata.category(ch)
+            if cat in ('Mn', 'Cf'):
+                return 0
+            if cat == 'Cc':
+                return -1
+            return 2 if _unicodedata.east_asian_width(ch) in ('W', 'F') else 1
+
+        @staticmethod
+        def wcswidth(s: str, n: int) -> int:
+            if s is None:
+                return -1
+            total = 0
+            for ch in s[:n]:
+                w = _LibcWcWidthShim.wcwidth(ch)
+                if w < 0:
+                    return -1
+                total += w
+            return total
+
+    _LIBC = _LibcWcWidthShim()  # type: ignore[assignment]
 # Max for c_int
 _MAX_INT = 2 ** (ctypes.sizeof(ctypes.c_int) * 8 - 1) - 1
 
@@ -238,7 +282,8 @@ def _synchronize_textiowrapper(tio: t.TextIO, lock: threading.RLock):
             nonlocal lock
             lock = contextlib.nullcontext()
 
-        os.register_at_fork(after_in_child=disable_lock)
+        if hasattr(os, 'register_at_fork'):
+            os.register_at_fork(after_in_child=disable_lock)
 
         @wraps(f)
         def locking_wrapper(*args, **kwargs):
@@ -254,7 +299,7 @@ def _synchronize_textiowrapper(tio: t.TextIO, lock: threading.RLock):
     buffer.flush = _wrap_with_lock(buffer.flush, lock)  # type: ignore[method-assign]
 
 
-def setraw(fd: int, when: int = termios.TCSAFLUSH) -> None:
+def setraw(fd: int, when: int | None = None) -> None:
     """Put terminal into a raw mode.
 
     Copied from ``tty`` from CPython 3.11.0, and modified to not remove OPOST from OFLAG
@@ -264,6 +309,10 @@ def setraw(fd: int, when: int = termios.TCSAFLUSH) -> None:
     over the fork, but before it can be displayed, this plugin will have continued executing, potentially
     setting stdout and stdin to raw which remove output post processing that commonly converts NL to CRLF
     """
+    if termios is None:
+        raise NotImplementedError("setraw is not supported on this platform (requires termios)")
+    if when is None:
+        when = termios.TCSAFLUSH
     mode = termios.tcgetattr(fd)
     mode[tty.IFLAG] = mode[tty.IFLAG] & ~(termios.BRKINT | termios.ICRNL | termios.INPCK | termios.ISTRIP | termios.IXON)
     mode[tty.OFLAG] = mode[tty.OFLAG] & ~(termios.OPOST)
@@ -968,7 +1017,11 @@ class Display(metaclass=Singleton):
 
     def _set_column_width(self) -> None:
         if os.isatty(1):
-            tty_size = unpack('HHHH', fcntl.ioctl(1, termios.TIOCGWINSZ, pack('HHHH', 0, 0, 0, 0)))[1]
+            if fcntl is None or termios is None:
+                # Windows: use stdlib cross-platform terminal-size query.
+                tty_size = shutil.get_terminal_size((80, 24)).columns
+            else:
+                tty_size = unpack('HHHH', fcntl.ioctl(1, termios.TIOCGWINSZ, pack('HHHH', 0, 0, 0, 0)))[1]
         else:
             tty_size = 0
         self.columns = max(79, tty_size - 1)
@@ -992,6 +1045,12 @@ class Display(metaclass=Singleton):
         if HAS_CURSES and not self.setup_curses:
             setupterm()
             self.setup_curses = True
+
+        if sys.platform == 'win32':
+            # Interactive prompt_until requires termios/tty/process groups (POSIX).
+            # v1 Windows controller: disable interactive prompts. See Phase 2 plan
+            # for a Windows-native replacement using msvcrt.getch + SetConsoleMode.
+            raise AnsiblePromptNoninteractive('interactive prompts are not yet supported on the Windows controller')
 
         if (
             self._stdin_fd is None

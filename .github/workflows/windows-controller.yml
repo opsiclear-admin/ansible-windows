@@ -30,18 +30,14 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e .
 
-      # Phase 0: this is EXPECTED to fail on an untouched devel branch.
-      # The first failure we expect to see is either:
-      #   - ImportError on os.register_at_fork (utils/display.py:241), or
-      #   - ValueError: cannot find context for 'fork' (utils/multiprocessing.py:15)
-      # That failure signature is the Phase 1 starting point.
-      # Remove `continue-on-error` once Phase 1 lands.
-      - name: Import ansible (expected to fail until Phase 1 lands)
-        continue-on-error: true
+      - name: Import ansible
         run: |
           python -c "import ansible"
           python -c "import ansible.cli"
           python -c "import ansible.executor.task_queue_manager"
+
+      - name: ansible --version
+        run: ansible --version
 
       - name: Record Python + platform info
         run: |
