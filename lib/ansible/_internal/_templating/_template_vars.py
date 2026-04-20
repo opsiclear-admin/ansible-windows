@@ -5,10 +5,7 @@ import os as _os
 import platform as _platform
 import time as _time
 
-try:
-    import pwd as _pwd
-except ImportError:
-    _pwd = None  # type: ignore[assignment]
+from ansible.compat import posix as _posix
 
 from ansible import constants as _constants
 from ansible.module_utils._internal import _datatag
@@ -33,13 +30,7 @@ def generate_ansible_template_vars(
 
     template_uid: int | str
 
-    if _pwd is not None:
-        try:
-            template_uid = _pwd.getpwuid(template_stat.st_uid).pw_name
-        except KeyError:
-            template_uid = template_stat.st_uid
-    else:
-        template_uid = template_stat.st_uid
+    template_uid = _posix.lookup_user_name(template_stat.st_uid)
 
     temp_vars = dict(
         template_host=_platform.node(),

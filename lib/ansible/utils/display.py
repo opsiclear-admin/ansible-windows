@@ -282,8 +282,8 @@ def _synchronize_textiowrapper(tio: t.TextIO, lock: threading.RLock):
             nonlocal lock
             lock = contextlib.nullcontext()
 
-        if hasattr(os, 'register_at_fork'):
-            os.register_at_fork(after_in_child=disable_lock)
+        from ansible.compat.posix import register_at_fork
+        register_at_fork(after_in_child=disable_lock)
 
         @wraps(f)
         def locking_wrapper(*args, **kwargs):
@@ -1017,11 +1017,8 @@ class Display(metaclass=Singleton):
 
     def _set_column_width(self) -> None:
         if os.isatty(1):
-            if fcntl is None or termios is None:
-                # Windows: use stdlib cross-platform terminal-size query.
-                tty_size = shutil.get_terminal_size((80, 24)).columns
-            else:
-                tty_size = unpack('HHHH', fcntl.ioctl(1, termios.TIOCGWINSZ, pack('HHHH', 0, 0, 0, 0)))[1]
+            from ansible.compat.posix import get_terminal_columns
+            tty_size = get_terminal_columns()
         else:
             tty_size = 0
         self.columns = max(79, tty_size - 1)

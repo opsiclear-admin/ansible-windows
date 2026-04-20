@@ -102,11 +102,11 @@ class WorkerProcess(multiprocessing_context.Process):  # type: ignore[name-defin
 
     def _term(self, signum, frame) -> None:
         """In child termination when notified by the parent"""
+        from ansible.compat.posix import killpg
         signal.signal(signum, signal.SIG_DFL)
 
         try:
-            if hasattr(os, 'killpg'):
-                os.killpg(self.pid, signum)
+            killpg(self.pid, signum)
             os.kill(self.pid, signum)
         except OSError as e:
             if e.errno != errno.ESRCH:
@@ -173,12 +173,12 @@ class WorkerProcess(multiprocessing_context.Process):  # type: ignore[name-defin
         with stdio fds.
         """
         try:
-            if hasattr(os, 'setsid'):
-                os.setsid()
+            from ansible.compat.posix import setsid, IS_WINDOWS
+            setsid()
             # Build stdin open mode. O_NONBLOCK is POSIX-only and is a no-op on the
             # Windows nul device anyway.
             stdin_mode = os.O_RDWR
-            if hasattr(os, 'O_NONBLOCK') and sys.platform != 'win32':
+            if hasattr(os, 'O_NONBLOCK') and not IS_WINDOWS:
                 stdin_mode |= os.O_NONBLOCK
             # Create new fds for stdin/stdout/stderr, but also capture python uses of sys.stdout/stderr
             for fds, mode in (
