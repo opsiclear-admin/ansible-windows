@@ -147,6 +147,25 @@ class WorkerProcess(multiprocessing_context.Process):  # type: ignore[name-defin
 
         os._exit(1)
 
+    def _bootstrap_spawn_child(self) -> None:
+        """
+        When running under the spawn start method (Windows, or any future non-fork
+        platform), the child process starts with a fresh Python interpreter and does
+        not inherit the parent's context.CLIARGS or plugin_loader state. Restore both
+        before any plugin lookup. Under fork this is a no-op because context.CLIARGS
+        was copied-on-write from the parent.
+        """
+        from ansible import context as _context
+        if _context.CLIARGS:
+            return  # fork child or already bootstrapped
+        from ansible.module_utils.common.collections import is_sequence
+        from ansible.plugins.loader import init_plugin_loader
+        _context.CLIARGS = self._cliargs
+        cli_collections_path = self._cliargs.get('collections_path') or []
+        if not is_sequence(cli_collections_path):
+            cli_collections_path = [cli_collections_path]
+        init_plugin_loader(cli_collections_path)
+
     def _detach(self) -> None:
         """
         The intent here is to detach the child process from the inherited stdio fds,
@@ -191,6 +210,7 @@ class WorkerProcess(multiprocessing_context.Process):  # type: ignore[name-defin
         a try/except added in far-away code can cause a crashed child process
         to suddenly assume the role and prior state of its parent.
         """
+        self._bootstrap_spawn_child()
         # Set the queue on Display so calls to Display.display are proxied over the queue
         display.set_queue(self._final_q)
         self._detach()
