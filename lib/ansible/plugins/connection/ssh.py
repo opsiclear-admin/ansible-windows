@@ -415,13 +415,11 @@ import collections.abc as c
 import argparse
 import errno
 import contextlib
-import fcntl
 import hashlib
 import io
 import json
 import os
 import pathlib
-import pty
 import re
 import selectors
 import shlex
@@ -431,6 +429,20 @@ import sys
 import tempfile
 import time
 import typing as t
+
+# fcntl and pty are POSIX-only. On Windows the ssh connection plugin is
+# deferred to Phase 5 of the windows-controller port — import the modules
+# lazily so this file can be imported by the plugin loader without exploding,
+# and raise a clean AnsibleError if _connect is actually invoked on Windows.
+try:
+    import fcntl
+except ImportError:
+    fcntl = None  # type: ignore[assignment]
+
+try:
+    import pty
+except ImportError:
+    pty = None  # type: ignore[assignment]
 from functools import wraps
 from multiprocessing.shared_memory import SharedMemory
 
@@ -675,6 +687,13 @@ class Connection(ConnectionBase):
     # management here.
 
     def _connect(self) -> Connection:
+        if sys.platform == 'win32':
+            raise AnsibleError(
+                "The 'ssh' connection plugin is not yet supported on a Windows "
+                "controller. Use 'winrm' or 'psrp' for Windows targets, or wait "
+                "for the Phase 5 ssh subprocess wrapper in the windows-controller "
+                "branch."
+            )
         return self
 
     @staticmethod

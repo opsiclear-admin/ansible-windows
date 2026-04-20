@@ -60,8 +60,11 @@ class ShellBase(AnsiblePlugin):
         normalized_paths = [d.rstrip('/') for d in self.get_option('system_tmpdirs')]
 
         # Make sure all system_tmpdirs are absolute otherwise they'd be relative to the login dir
-        # which is almost certainly going to fail in a cornercase.
-        if not all(os.path.isabs(d) for d in normalized_paths):
+        # which is almost certainly going to fail in a cornercase. Accept either the controller's
+        # native notion of absolute or POSIX-absolute (`/var/tmp`), since these paths are used on
+        # the *remote* POSIX shell and a Windows controller would otherwise reject the POSIX defaults.
+        import posixpath
+        if not all(os.path.isabs(d) or posixpath.isabs(d) for d in normalized_paths):
             raise AnsibleError('The configured system_tmpdirs contains a relative path: {0}. All'
                                ' system_tmpdirs must be absolute'.format(to_native(normalized_paths)))
 

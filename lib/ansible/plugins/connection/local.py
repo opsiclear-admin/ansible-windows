@@ -38,14 +38,23 @@ DOCUMENTATION = """
 import functools
 import getpass
 import os
-import pty
 import selectors
 import shutil
 import subprocess
+import sys
 import time
 import typing as t
 
+# pty is POSIX-only. The local connection plugin is out of scope for the
+# Windows controller — let the module import succeed and raise cleanly at
+# _connect so the plugin loader doesn't emit a misleading import-error.
+try:
+    import pty
+except ImportError:
+    pty = None  # type: ignore[assignment]
+
 import ansible.constants as C
+from ansible.compat.posix import getuid
 from ansible.errors import AnsibleError, AnsibleFileNotFound, AnsibleConnectionFailure
 from ansible.module_utils.common.text.converters import to_bytes, to_native, to_text
 from ansible.plugins.connection import ConnectionBase
@@ -69,11 +78,18 @@ class Connection(ConnectionBase):
             self.default_user = getpass.getuser()
         except (ImportError, KeyError, OSError):
             # deprecated: description='only OSError is required for Python 3.13+' python_version='3.12'
-            display.vv("Current user (uid=%s) does not seem to exist on this system, leaving user empty." % os.getuid())
+            display.vv("Current user (uid=%s) does not seem to exist on this system, leaving user empty." % getuid())
             self.default_user = ""
 
     def _connect(self) -> Connection:
         """ connect to the local host; nothing to do here """
+        if sys.platform == 'win32':
+            raise AnsibleError(
+                "The 'local' connection plugin is not supported on a Windows "
+                "controller: it ships POSIX-shell modules to the controller for "
+                "execution, which is out of scope for the native Windows port. "
+                "Use 'winrm' or 'psrp' for Windows targets."
+            )
 
         # Because we haven't made any remote connection we're running as
         # the local user, rather than as whatever is configured in remote_user.
