@@ -1597,20 +1597,33 @@ class Connection(ConnectionBase):
 
         # NOTE: if passing a list to build_command, no need to quote those paths,
         # for strings use shlex.quote for local/controller and self._shell.quote for target
+        # On a Windows controller, local paths are `C:\Users\...` which sftp's
+        # own argument parser interprets as C-style escape sequences (\U, \t,
+        # etc.) even when single-quoted. Convert to forward slashes — Windows
+        # accepts `C:/Users/...` in every tool we hand paths to, and sftp then
+        # stops treating the backslashes as escapes. For scp the local path is
+        # passed directly via argv (not via an in-process shell), so the
+        # backslash→slash conversion there is a belt-and-braces guard against
+        # any remote-side parser ambiguity.
+        def _local_path(p: str) -> str:
+            if sys.platform == 'win32':
+                return p.replace('\\', '/')
+            return p
+
         for method in methods:
             returncode = stdout = stderr = None
             match method:
                 case 'sftp':
                     cmd = self._build_command(self.get_option('sftp_executable'), method, to_bytes(host))
-                    in_data = f"{sftp_action} {shlex.quote(in_path)} {shlex.quote(out_path)}\n"
+                    in_data = f"{sftp_action} {shlex.quote(_local_path(in_path))} {shlex.quote(out_path)}\n"
                     in_data = to_bytes(in_data, nonstring='passthru')
                     (returncode, stdout, stderr) = self._bare_run(cmd, in_data, checkrc=False)
                 case 'scp':
                     scp = self.get_option('scp_executable')
                     if sftp_action == 'get':
-                        cmd = self._build_command(scp, method, f'{host}:{self._shell.quote(in_path)}', out_path)
+                        cmd = self._build_command(scp, method, f'{host}:{self._shell.quote(in_path)}', _local_path(out_path))
                     else:
-                        cmd = self._build_command(scp, method, in_path, f'{host}:{self._shell.quote(out_path)}')
+                        cmd = self._build_command(scp, method, _local_path(in_path), f'{host}:{self._shell.quote(out_path)}')
                     in_data = None
                     (returncode, stdout, stderr) = self._bare_run(cmd, in_data, checkrc=False)
                 case 'piped':
