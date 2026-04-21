@@ -14,6 +14,33 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
+  safety-gate:
+    name: safety gate (unsafe-pattern scan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Scan lib/ansible for un-shimmed POSIX-only patterns
+        run: python hacking/windows-controller/check_unsafe_patterns.py
+
+  pickle-tests:
+    name: spawn-worker pickle roundtrip
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Install ansible-core (editable) + pytest
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+          python -m pip install pytest pytest-mock
+      - name: Run pickle-roundtrip unit tests
+        run: python -m pytest test/units/executor/test_worker_pickle.py -v
+
   import-smoke:
     name: import smoke (py${{ matrix.python }})
     runs-on: windows-2022
@@ -330,6 +357,70 @@ jobs:
       - name: Run SSH smoke playbook
         run: |
           ansible-playbook -i _ci/ssh_inv.yml _ci/ssh_smoke.yml
+
+      - name: Failure-isolation probe (assert exit code 4 on all-unreachable)
+        run: |
+          cat > _ci/fail_inv.yml <<'EOF'
+          all:
+            hosts:
+              bogus:
+                ansible_connection: ssh
+                ansible_host: 127.0.0.1
+                ansible_port: 1
+                ansible_ssh_common_args: "-o StrictHostKeyChecking=no -o ConnectTimeout=3"
+          EOF
+          cat > _ci/fail_play.yml <<'EOF'
+          ---
+          - hosts: bogus
+            gather_facts: false
+            tasks:
+              - ansible.builtin.ping:
+          EOF
+          set +e
+          ansible-playbook -i _ci/fail_inv.yml _ci/fail_play.yml
+          rc=$?
+          set -e
+          # With only unreachable hosts and no reachable ones ansible exits 4
+          # (all hosts unreachable). Assert that rather than a Python traceback
+          # or exit 0.
+          if [ "$rc" -ne 4 ]; then
+            echo "expected exit=4 (all unreachable), got $rc"
+            exit 1
+          fi
+          echo "exit-code assertion OK (rc=4 for all-unreachable)"
+
+      - name: Stress-suite smoke (durability + edge cases over SSH)
+        run: |
+          # Point the stress inventories at the CI's self-target sshd rather
+          # than the dev-box WSL address baked into the shipped inventories.
+          mkdir -p _ci
+          cat > _ci/stress_inv.yml <<EOF
+          all:
+            hosts:
+              wsl:
+                ansible_connection: ssh
+                ansible_host: 127.0.0.1
+                ansible_user: runner
+                ansible_ssh_private_key_file: ./_ci_key
+                ansible_ssh_common_args: "-o StrictHostKeyChecking=no"
+                ansible_python_interpreter: /usr/bin/python3
+          EOF
+          # Durability — the full 100-task play is ~5 min; cap to 20 for CI
+          # by running just the first 20 tasks; durability of the full 100 is
+          # already proven on the dev box and the cap gives CI a fast signal.
+          python - <<'PY'
+          import pathlib
+          src = pathlib.Path('hacking/windows-controller/stress/100_tasks_durability.yml').read_text()
+          # Keep only first 20 task blocks.
+          header, _, rest = src.partition('  tasks:')
+          tasks = rest.strip().split('\n')
+          # Each task is 3 lines: name, command, changed_when.
+          kept = '\n'.join(tasks[:60])
+          pathlib.Path('_ci/stress_durability_short.yml').write_text(f"{header}  tasks:\n{kept}\n")
+          PY
+          ansible-playbook -i _ci/stress_inv.yml _ci/stress_durability_short.yml
+          # Edge cases — full run.
+          ansible-playbook -i _ci/stress_inv.yml hacking/windows-controller/stress/edge_cases.yml
 
   compare-ansiballz:
     name: cross-platform AnsiballZ byte-identity
