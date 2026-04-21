@@ -312,8 +312,8 @@ def version(prog=None):
         libyaml_fragment = "without libyaml"
 
     result.append("  configured module search path = %s" % cpath)
-    result.append("  ansible python module location = %s" % ':'.join(ansible.__path__))
-    result.append("  ansible collection location = %s" % ':'.join(C.COLLECTIONS_PATHS))
+    result.append("  ansible python module location = %s" % os.pathsep.join(ansible.__path__))
+    result.append("  ansible collection location = %s" % os.pathsep.join(C.COLLECTIONS_PATHS))
     result.append("  executable location = %s" % sys.argv[0])
     result.append("  python version = %s (%s)" % (''.join(sys.version.splitlines()), to_native(sys.executable)))
     result.append(f"  jinja version = {_templating.jinja2_version}")

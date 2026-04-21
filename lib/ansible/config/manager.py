@@ -186,7 +186,27 @@ def _ensure_type(value: object, value_type: str | None, origin: str | None = Non
 
         case 'pathspec':
             if isinstance(value, str):
-                value = value.split(os.pathsep)
+                if sys.platform == 'win32':
+                    # Windows default config values in base.yml still use literal `:`
+                    # separators inherited from POSIX (e.g. `ANSIBLE_HOME/collections:/usr/share/...`).
+                    # Split on os.pathsep (`;`) first for user-provided values, then smart-split each
+                    # piece on any `:` that isn't a drive-letter anchor. Without this, the defaults
+                    # collapse into a single path ending in `:` and ansible-galaxy fails with
+                    # WinError 123.
+                    parts: list[str] = []
+                    for chunk in value.split(os.pathsep):
+                        buf: list[str] = []
+                        for ch in chunk:
+                            if ch == ':' and not (len(buf) == 1 and buf[0].isalpha()):
+                                parts.append(''.join(buf))
+                                buf = []
+                            else:
+                                buf.append(ch)
+                        if buf:
+                            parts.append(''.join(buf))
+                    value = parts
+                else:
+                    value = value.split(os.pathsep)
 
             if isinstance(value, Sequence) and not isinstance(value, bytes) and all(isinstance(x, str) for x in value):
                 return [resolve_path(x, basedir=basedir) for x in value]
