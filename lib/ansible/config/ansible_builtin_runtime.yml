@@ -56,6 +56,13 @@ plugin_routing:
     smart:
       redirect: ansible.legacy.ssh
   modules:
+    # `systemd` is a long-standing alias for `systemd_service`. Upstream ships
+    # it as a git symlink at lib/ansible/modules/systemd.py; on Windows
+    # git clones without core.symlinks=true materialize the symlink as a
+    # plain-text file that Python cannot execute. Redirect here instead so
+    # the behavior doesn't depend on filesystem-level symlink support.
+    systemd:
+      redirect: ansible.builtin.systemd_service
     # test entry
     formerly_core_ping:
       redirect: testns.testcoll.ping

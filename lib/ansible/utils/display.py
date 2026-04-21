@@ -1023,6 +1023,99 @@ class Display(metaclass=Singleton):
             tty_size = 0
         self.columns = max(79, tty_size - 1)
 
+    def _win32_prompt_until(
+        self,
+        msg: str,
+        private: bool,
+        seconds: int | None,
+        interrupt_input: c.Iterable[bytes] | None,
+        complete_input: c.Iterable[bytes] | None,
+    ) -> bytes:
+        """
+        Windows-native replacement for the termios-based `prompt_until` loop.
+
+        Two code paths:
+
+        - When the caller doesn't need timeout or character-level detection
+          (the common `vars_prompt:` case), delegate to `input()` / `getpass`.
+          This gives full line-editing, cmd.exe / PowerShell / Windows Terminal
+          all handle backspace and Ctrl-C natively, and the password mode
+          echoes nothing.
+
+        - When the caller asks for `seconds`, `interrupt_input`, or
+          `complete_input`, poll the console with `msvcrt.kbhit` / `getwch`
+          one character at a time, mirroring the POSIX character-at-a-time
+          read loop but without termios/tty manipulation.
+
+        Limitations vs POSIX:
+        - `msvcrt` only works when stdin is a real console handle. In Git Bash
+          or other ConPTY-less environments it raises OSError, and the caller
+          should route through the simpler input-based path instead.
+        """
+        import getpass as _getpass
+        import time as _time
+
+        # Fast path: simple line input. This covers ~all vars_prompt uses.
+        if seconds is None and interrupt_input is None and complete_input is None:
+            try:
+                self.display(msg)
+                if private:
+                    line = _getpass.getpass('')
+                else:
+                    line = input()
+            except KeyboardInterrupt:
+                raise AnsiblePromptInterrupt('user interrupt')
+            except EOFError:
+                raise AnsiblePromptNoninteractive('stdin is not interactive')
+            return to_bytes(line, errors='surrogate_or_strict')
+
+        # Char-at-a-time path for timeout/interrupt/complete semantics.
+        try:
+            import msvcrt  # POSIX guard before this whole method, so no try/except outside
+        except ImportError:  # pragma: no cover - Windows only
+            raise AnsiblePromptNoninteractive('msvcrt not available, cannot do timed prompts')
+
+        self.display(msg)
+        default_interrupt = b'\x03'  # Ctrl-C byte
+        start = _time.time()
+        buf = b''
+        try:
+            while seconds is None or (_time.time() - start < seconds):
+                if not msvcrt.kbhit():
+                    _time.sleep(C.DEFAULT_INTERNAL_POLL_INTERVAL)
+                    continue
+                try:
+                    ch = msvcrt.getwch()
+                except OSError:
+                    raise AnsiblePromptNoninteractive('stdin is not a console')
+                cb = ch.encode('utf-8', errors='surrogate_or_strict')
+                # Interrupt check (explicit set or Ctrl-C by default).
+                if (interrupt_input is None and cb == default_interrupt) \
+                        or (interrupt_input is not None and cb.lower() in interrupt_input):
+                    raise AnsiblePromptInterrupt('user interrupt')
+                # Completion check — Enter by default.
+                if (complete_input is None and ch in ('\r', '\n')) \
+                        or (complete_input is not None and cb.lower() in complete_input):
+                    if not private:
+                        sys.stdout.write('\n')
+                        sys.stdout.flush()
+                    return buf
+                # Backspace handling (BS 0x08, DEL 0x7f).
+                if ch in ('\x08', '\x7f'):
+                    if buf:
+                        buf = buf[:-1]
+                        if not private:
+                            sys.stdout.write('\b \b')
+                            sys.stdout.flush()
+                    continue
+                buf += cb
+                if not private:
+                    sys.stdout.write(ch)
+                    sys.stdout.flush()
+        except KeyboardInterrupt:
+            raise AnsiblePromptInterrupt('user interrupt')
+        return buf
+
     def prompt_until(
         self,
         msg: str,
@@ -1044,10 +1137,10 @@ class Display(metaclass=Singleton):
             self.setup_curses = True
 
         if sys.platform == 'win32':
-            # Interactive prompt_until requires termios/tty/process groups (POSIX).
-            # v1 Windows controller: disable interactive prompts. See Phase 2 plan
-            # for a Windows-native replacement using msvcrt.getch + SetConsoleMode.
-            raise AnsiblePromptNoninteractive('interactive prompts are not yet supported on the Windows controller')
+            return self._win32_prompt_until(
+                msg=msg, private=private, seconds=seconds,
+                interrupt_input=interrupt_input, complete_input=complete_input,
+            )
 
         if (
             self._stdin_fd is None
