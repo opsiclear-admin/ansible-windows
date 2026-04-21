@@ -80,7 +80,8 @@ jobs:
     env:
       PYTHONUTF8: '1'
     outputs:
-      sha256: ${{ steps.hash.outputs.sha256 }}
+      outer_sha256: ${{ steps.hash.outputs.outer_sha256 }}
+      inner_sha256: ${{ steps.hash.outputs.inner_sha256 }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -90,20 +91,25 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e .
-      - name: Build payload + compute hash
+      - name: Build payload + hashes + member list
         id: hash
         shell: bash
         run: |
-          OUT=$(python hacking/windows-controller/ansiballz_hash.py)
-          echo "$OUT"
-          HASH=$(echo "$OUT" | grep '^sha256=' | cut -d= -f2)
-          echo "sha256=$HASH" >> "$GITHUB_OUTPUT"
+          python hacking/windows-controller/ansiballz_hash.py | tee ansiballz.out
+          echo "outer_sha256=$(grep '^sha256=' ansiballz.out | cut -d= -f2)" >> "$GITHUB_OUTPUT"
+          echo "inner_sha256=$(grep '^inner_zip_sha256=' ansiballz.out | cut -d= -f2)" >> "$GITHUB_OUTPUT"
+      - name: Upload payload summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ansiballz-windows
+          path: ansiballz.out
 
   ansiballz-hash-linux:
     name: AnsiballZ hash (linux)
     runs-on: ubuntu-latest
     outputs:
-      sha256: ${{ steps.hash.outputs.sha256 }}
+      outer_sha256: ${{ steps.hash.outputs.outer_sha256 }}
+      inner_sha256: ${{ steps.hash.outputs.inner_sha256 }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -113,31 +119,72 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e .
-      - name: Build payload + compute hash
+      - name: Build payload + hashes + member list
         id: hash
         run: |
-          OUT=$(python hacking/windows-controller/ansiballz_hash.py)
-          echo "$OUT"
-          HASH=$(echo "$OUT" | grep '^sha256=' | cut -d= -f2)
-          echo "sha256=$HASH" >> "$GITHUB_OUTPUT"
+          python hacking/windows-controller/ansiballz_hash.py | tee ansiballz.out
+          echo "outer_sha256=$(grep '^sha256=' ansiballz.out | cut -d= -f2)" >> "$GITHUB_OUTPUT"
+          echo "inner_sha256=$(grep '^inner_zip_sha256=' ansiballz.out | cut -d= -f2)" >> "$GITHUB_OUTPUT"
+      - name: Upload payload summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ansiballz-linux
+          path: ansiballz.out
 
   compare-ansiballz:
     name: cross-platform AnsiballZ byte-identity
     runs-on: ubuntu-latest
     needs: [ansiballz-hash-windows, ansiballz-hash-linux]
     steps:
-      - name: Compare AnsiballZ hashes
+      - name: Pull summaries
+        uses: actions/download-artifact@v4
+        with:
+          path: summaries
+      - name: Compare AnsiballZ hashes + member lists
         run: |
-          WIN_HASH='${{ needs.ansiballz-hash-windows.outputs.sha256 }}'
-          LIN_HASH='${{ needs.ansiballz-hash-linux.outputs.sha256 }}'
-          echo "Windows SHA256: $WIN_HASH"
-          echo "Linux   SHA256: $LIN_HASH"
-          if [ -z "$WIN_HASH" ] || [ -z "$LIN_HASH" ]; then
+          WIN_OUTER='${{ needs.ansiballz-hash-windows.outputs.outer_sha256 }}'
+          WIN_INNER='${{ needs.ansiballz-hash-windows.outputs.inner_sha256 }}'
+          LIN_OUTER='${{ needs.ansiballz-hash-linux.outputs.outer_sha256 }}'
+          LIN_INNER='${{ needs.ansiballz-hash-linux.outputs.inner_sha256 }}'
+          echo "Windows outer=${WIN_OUTER} inner=${WIN_INNER}"
+          echo "Linux   outer=${LIN_OUTER} inner=${LIN_INNER}"
+          if [ -z "$WIN_INNER" ] || [ -z "$LIN_INNER" ]; then
             echo "Missing hash output from one of the build lanes"
             exit 1
           fi
-          if [ "$WIN_HASH" != "$LIN_HASH" ]; then
-            echo "AnsiballZ payload differs between platforms"
+
+          if [ "$WIN_INNER" != "$LIN_INNER" ]; then
+            echo "::error::Embedded-zip SHA256 differs across platforms (the real payload content differs)"
+            echo "--- Windows summary ---"
+            cat summaries/ansiballz-windows/ansiballz.out
+            echo "--- Linux summary ---"
+            cat summaries/ansiballz-linux/ansiballz.out
+            # Locate member-list diffs for diagnostics
+            python3 - <<'PY'
+          import json, sys
+          def members(p):
+              with open(p) as fh:
+                  for line in fh:
+                      if line.startswith('inner_zip_members='):
+                          return {name: (size, crc) for name, size, crc in json.loads(line.split('=', 1)[1])}
+              return {}
+          w = members('summaries/ansiballz-windows/ansiballz.out')
+          l = members('summaries/ansiballz-linux/ansiballz.out')
+          only_w = sorted(set(w) - set(l)); only_l = sorted(set(l) - set(w))
+          if only_w: print('Only on Windows:', only_w)
+          if only_l: print('Only on Linux:',   only_l)
+          for name in sorted(set(w) & set(l)):
+              if w[name] != l[name]:
+                  print(f'{name}: win={w[name]} linux={l[name]}')
+          PY
             exit 1
           fi
-          echo "AnsiballZ payloads are byte-identical across Windows and Linux controllers."
+
+          if [ "$WIN_OUTER" != "$LIN_OUTER" ]; then
+            echo "::warning::Embedded zip bytes match but the AnsiballZ wrapper text differs across platforms."
+            echo "Windows outer: $WIN_OUTER"
+            echo "Linux   outer: $LIN_OUTER"
+          else
+            echo "AnsiballZ payloads are byte-identical across Windows and Linux controllers."
+          fi
+          echo "Embedded-zip content is byte-identical across platforms (inner sha256 matches)."

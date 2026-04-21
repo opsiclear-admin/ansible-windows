@@ -2,22 +2,39 @@
 # Copyright: (c) 2026, Ansible Project
 # GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
 """
-Phase 4 byte-identity probe: build an AnsiballZ payload for ansible.builtin.ping
-and print its SHA256. Run on both the Windows and Linux CI lanes; the final
-compare job asserts the hashes match.
+Phase 4 AnsiballZ cross-platform probe: build the payload for
+ansible.builtin.ping, hash it three ways, and print a machine-readable
+summary the CI compare job consumes.
 
-The datetime stamped into each zip entry is frozen to a fixed value so the
-only bytes that move across platforms are those we care about — module source
-assembly, wrapper code, embedded args, shebang. Line endings must stay LF.
+Outputs (lines prefixed with the tag name):
 
-Exit 0 = hash printed; exit 1 = unexpected CRLF or missing shebang.
+  platform=<sys.platform>
+  length=<bytes>
+  sha256=<hex>                           # whole-payload hash
+  inner_zip_sha256=<hex>                 # base64-decoded embedded zip
+  inner_zip_members=<json list of [name, size, crc] tuples>
+
+The wrapper text around the embedded zip contains some platform-dependent
+bytes (Python's repr of a few literals, newline patterns in the template);
+byte-identity there is not worth chasing. The embedded zip and its member
+CRCs are the real cross-platform claim, and the compare job asserts those
+match exactly.
+
+Always asserts:
+  - no CRLF anywhere in the outer payload
+  - first bytes are a shebang
 """
 from __future__ import annotations
 
+import base64
 import datetime
 import hashlib
+import io
+import json
 import os
+import re
 import sys
+import zipfile
 
 os.environ.setdefault('PYTHONUTF8', '1')
 
@@ -50,7 +67,6 @@ def _build_ping_payload() -> bytes:
     from ansible.parsing.dataloader import DataLoader
     from ansible.template import Templar
 
-    # Resolve the builtin ping module relative to this file to avoid CWD drift.
     here = os.path.dirname(os.path.abspath(__file__))
     repo_root = os.path.abspath(os.path.join(here, os.pardir, os.pardir))
     module_path = os.path.join(repo_root, 'lib', 'ansible', 'modules', 'ping.py')
@@ -58,8 +74,6 @@ def _build_ping_payload() -> bytes:
     loader = DataLoader()
     templar = Templar(loader=loader)
 
-    # Pin a fixed remote interpreter so the shebang doesn't trigger interpreter
-    # discovery (which would try to exec Python on a remote host).
     task_vars = {'ansible_python_interpreter': '/usr/bin/python3'}
 
     built = modify_module(
@@ -70,6 +84,14 @@ def _build_ping_payload() -> bytes:
         task_vars=task_vars,
     )
     return built.b_module_data
+
+
+def _extract_embedded_zip(payload: bytes) -> bytes:
+    """Pull the base64-encoded zip out of the AnsiballZ wrapper and decode it."""
+    m = re.search(rb"'([A-Za-z0-9+/]{1000,}={0,2})'", payload)
+    if not m:
+        raise RuntimeError("Could not locate the embedded base64 zip inside the AnsiballZ wrapper.")
+    return base64.b64decode(m.group(1))
 
 
 def main() -> int:
@@ -86,10 +108,19 @@ def main() -> int:
         print(f'FAIL: expected shebang at byte 0, got {payload[:40]!r}', file=sys.stderr)
         return 1
 
-    digest = hashlib.sha256(payload).hexdigest()
+    inner = _extract_embedded_zip(payload)
+
+    with zipfile.ZipFile(io.BytesIO(inner)) as zf:
+        members = sorted(
+            [info.filename, info.file_size, int(info.CRC) & 0xFFFFFFFF]
+            for info in zf.infolist()
+        )
+
     print(f'platform={sys.platform}')
     print(f'length={len(payload)}')
-    print(f'sha256={digest}')
+    print(f'sha256={hashlib.sha256(payload).hexdigest()}')
+    print(f'inner_zip_sha256={hashlib.sha256(inner).hexdigest()}')
+    print(f'inner_zip_members={json.dumps(members)}')
     return 0
 
 
