@@ -1,0 +1,22 @@
+all:
+  vars:
+    ansible_user: root
+    ansible_ssh_private_key_file: E:/ansible-test/ssh/phase5_key
+    ansible_ssh_common_args: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=E:/ansible-test/ssh/known_hosts"
+    ansible_python_interpreter: /usr/bin/python3
+  hosts:
+    good_a:
+      ansible_host: 192.168.73.7
+    bad_a:
+      ansible_host: 10.255.255.1
+      ansible_ssh_extra_args: "-o ConnectTimeout=3"
+    good_b:
+      ansible_host: 192.168.73.7
+    bad_b:
+      ansible_host: 10.255.255.2
+      ansible_ssh_extra_args: "-o ConnectTimeout=3"
+    good_c:
+      ansible_host: 192.168.73.7
+    bad_c:
+      ansible_host: 10.255.255.3
+      ansible_ssh_extra_args: "-o ConnectTimeout=3"

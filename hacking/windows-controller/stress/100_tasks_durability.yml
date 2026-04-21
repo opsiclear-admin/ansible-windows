@@ -1,0 +1,304 @@
+---
+- hosts: wsl
+  gather_facts: false
+  tasks:
+    - name: "t1"
+      ansible.builtin.command: echo "task 1"
+      changed_when: false
+    - name: "t2"
+      ansible.builtin.command: echo "task 2"
+      changed_when: false
+    - name: "t3"
+      ansible.builtin.command: echo "task 3"
+      changed_when: false
+    - name: "t4"
+      ansible.builtin.command: echo "task 4"
+      changed_when: false
+    - name: "t5"
+      ansible.builtin.command: echo "task 5"
+      changed_when: false
+    - name: "t6"
+      ansible.builtin.command: echo "task 6"
+      changed_when: false
+    - name: "t7"
+      ansible.builtin.command: echo "task 7"
+      changed_when: false
+    - name: "t8"
+      ansible.builtin.command: echo "task 8"
+      changed_when: false
+    - name: "t9"
+      ansible.builtin.command: echo "task 9"
+      changed_when: false
+    - name: "t10"
+      ansible.builtin.command: echo "task 10"
+      changed_when: false
+    - name: "t11"
+      ansible.builtin.command: echo "task 11"
+      changed_when: false
+    - name: "t12"
+      ansible.builtin.command: echo "task 12"
+      changed_when: false
+    - name: "t13"
+      ansible.builtin.command: echo "task 13"
+      changed_when: false
+    - name: "t14"
+      ansible.builtin.command: echo "task 14"
+      changed_when: false
+    - name: "t15"
+      ansible.builtin.command: echo "task 15"
+      changed_when: false
+    - name: "t16"
+      ansible.builtin.command: echo "task 16"
+      changed_when: false
+    - name: "t17"
+      ansible.builtin.command: echo "task 17"
+      changed_when: false
+    - name: "t18"
+      ansible.builtin.command: echo "task 18"
+      changed_when: false
+    - name: "t19"
+      ansible.builtin.command: echo "task 19"
+      changed_when: false
+    - name: "t20"
+      ansible.builtin.command: echo "task 20"
+      changed_when: false
+    - name: "t21"
+      ansible.builtin.command: echo "task 21"
+      changed_when: false
+    - name: "t22"
+      ansible.builtin.command: echo "task 22"
+      changed_when: false
+    - name: "t23"
+      ansible.builtin.command: echo "task 23"
+      changed_when: false
+    - name: "t24"
+      ansible.builtin.command: echo "task 24"
+      changed_when: false
+    - name: "t25"
+      ansible.builtin.command: echo "task 25"
+      changed_when: false
+    - name: "t26"
+      ansible.builtin.command: echo "task 26"
+      changed_when: false
+    - name: "t27"
+      ansible.builtin.command: echo "task 27"
+      changed_when: false
+    - name: "t28"
+      ansible.builtin.command: echo "task 28"
+      changed_when: false
+    - name: "t29"
+      ansible.builtin.command: echo "task 29"
+      changed_when: false
+    - name: "t30"
+      ansible.builtin.command: echo "task 30"
+      changed_when: false
+    - name: "t31"
+      ansible.builtin.command: echo "task 31"
+      changed_when: false
+    - name: "t32"
+      ansible.builtin.command: echo "task 32"
+      changed_when: false
+    - name: "t33"
+      ansible.builtin.command: echo "task 33"
+      changed_when: false
+    - name: "t34"
+      ansible.builtin.command: echo "task 34"
+      changed_when: false
+    - name: "t35"
+      ansible.builtin.command: echo "task 35"
+      changed_when: false
+    - name: "t36"
+      ansible.builtin.command: echo "task 36"
+      changed_when: false
+    - name: "t37"
+      ansible.builtin.command: echo "task 37"
+      changed_when: false
+    - name: "t38"
+      ansible.builtin.command: echo "task 38"
+      changed_when: false
+    - name: "t39"
+      ansible.builtin.command: echo "task 39"
+      changed_when: false
+    - name: "t40"
+      ansible.builtin.command: echo "task 40"
+      changed_when: false
+    - name: "t41"
+      ansible.builtin.command: echo "task 41"
+      changed_when: false
+    - name: "t42"
+      ansible.builtin.command: echo "task 42"
+      changed_when: false
+    - name: "t43"
+      ansible.builtin.command: echo "task 43"
+      changed_when: false
+    - name: "t44"
+      ansible.builtin.command: echo "task 44"
+      changed_when: false
+    - name: "t45"
+      ansible.builtin.command: echo "task 45"
+      changed_when: false
+    - name: "t46"
+      ansible.builtin.command: echo "task 46"
+      changed_when: false
+    - name: "t47"
+      ansible.builtin.command: echo "task 47"
+      changed_when: false
+    - name: "t48"
+      ansible.builtin.command: echo "task 48"
+      changed_when: false
+    - name: "t49"
+      ansible.builtin.command: echo "task 49"
+      changed_when: false
+    - name: "t50"
+      ansible.builtin.command: echo "task 50"
+      changed_when: false
+    - name: "t51"
+      ansible.builtin.command: echo "task 51"
+      changed_when: false
+    - name: "t52"
+      ansible.builtin.command: echo "task 52"
+      changed_when: false
+    - name: "t53"
+      ansible.builtin.command: echo "task 53"
+      changed_when: false
+    - name: "t54"
+      ansible.builtin.command: echo "task 54"
+      changed_when: false
+    - name: "t55"
+      ansible.builtin.command: echo "task 55"
+      changed_when: false
+    - name: "t56"
+      ansible.builtin.command: echo "task 56"
+      changed_when: false
+    - name: "t57"
+      ansible.builtin.command: echo "task 57"
+      changed_when: false
+    - name: "t58"
+      ansible.builtin.command: echo "task 58"
+      changed_when: false
+    - name: "t59"
+      ansible.builtin.command: echo "task 59"
+      changed_when: false
+    - name: "t60"
+      ansible.builtin.command: echo "task 60"
+      changed_when: false
+    - name: "t61"
+      ansible.builtin.command: echo "task 61"
+      changed_when: false
+    - name: "t62"
+      ansible.builtin.command: echo "task 62"
+      changed_when: false
+    - name: "t63"
+      ansible.builtin.command: echo "task 63"
+      changed_when: false
+    - name: "t64"
+      ansible.builtin.command: echo "task 64"
+      changed_when: false
+    - name: "t65"
+      ansible.builtin.command: echo "task 65"
+      changed_when: false
+    - name: "t66"
+      ansible.builtin.command: echo "task 66"
+      changed_when: false
+    - name: "t67"
+      ansible.builtin.command: echo "task 67"
+      changed_when: false
+    - name: "t68"
+      ansible.builtin.command: echo "task 68"
+      changed_when: false
+    - name: "t69"
+      ansible.builtin.command: echo "task 69"
+      changed_when: false
+    - name: "t70"
+      ansible.builtin.command: echo "task 70"
+      changed_when: false
+    - name: "t71"
+      ansible.builtin.command: echo "task 71"
+      changed_when: false
+    - name: "t72"
+      ansible.builtin.command: echo "task 72"
+      changed_when: false
+    - name: "t73"
+      ansible.builtin.command: echo "task 73"
+      changed_when: false
+    - name: "t74"
+      ansible.builtin.command: echo "task 74"
+      changed_when: false
+    - name: "t75"
+      ansible.builtin.command: echo "task 75"
+      changed_when: false
+    - name: "t76"
+      ansible.builtin.command: echo "task 76"
+      changed_when: false
+    - name: "t77"
+      ansible.builtin.command: echo "task 77"
+      changed_when: false
+    - name: "t78"
+      ansible.builtin.command: echo "task 78"
+      changed_when: false
+    - name: "t79"
+      ansible.builtin.command: echo "task 79"
+      changed_when: false
+    - name: "t80"
+      ansible.builtin.command: echo "task 80"
+      changed_when: false
+    - name: "t81"
+      ansible.builtin.command: echo "task 81"
+      changed_when: false
+    - name: "t82"
+      ansible.builtin.command: echo "task 82"
+      changed_when: false
+    - name: "t83"
+      ansible.builtin.command: echo "task 83"
+      changed_when: false
+    - name: "t84"
+      ansible.builtin.command: echo "task 84"
+      changed_when: false
+    - name: "t85"
+      ansible.builtin.command: echo "task 85"
+      changed_when: false
+    - name: "t86"
+      ansible.builtin.command: echo "task 86"
+      changed_when: false
+    - name: "t87"
+      ansible.builtin.command: echo "task 87"
+      changed_when: false
+    - name: "t88"
+      ansible.builtin.command: echo "task 88"
+      changed_when: false
+    - name: "t89"
+      ansible.builtin.command: echo "task 89"
+      changed_when: false
+    - name: "t90"
+      ansible.builtin.command: echo "task 90"
+      changed_when: false
+    - name: "t91"
+      ansible.builtin.command: echo "task 91"
+      changed_when: false
+    - name: "t92"
+      ansible.builtin.command: echo "task 92"
+      changed_when: false
+    - name: "t93"
+      ansible.builtin.command: echo "task 93"
+      changed_when: false
+    - name: "t94"
+      ansible.builtin.command: echo "task 94"
+      changed_when: false
+    - name: "t95"
+      ansible.builtin.command: echo "task 95"
+      changed_when: false
+    - name: "t96"
+      ansible.builtin.command: echo "task 96"
+      changed_when: false
+    - name: "t97"
+      ansible.builtin.command: echo "task 97"
+      changed_when: false
+    - name: "t98"
+      ansible.builtin.command: echo "task 98"
+      changed_when: false
+    - name: "t99"
+      ansible.builtin.command: echo "task 99"
+      changed_when: false
+    - name: "t100"
+      ansible.builtin.command: echo "task 100"
+      changed_when: false

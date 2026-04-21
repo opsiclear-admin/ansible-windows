@@ -1,0 +1,13 @@
+---
+- hosts: all
+  gather_facts: false
+  tasks:
+    - name: "identify each worker"
+      ansible.builtin.command: "echo pid=$$ host={{ inventory_hostname }}"
+      changed_when: false
+      register: ident
+    - name: "assert output shape"
+      ansible.builtin.assert:
+        that:
+          - "'pid=' in ident.stdout"
+          - "inventory_hostname in ident.stdout"

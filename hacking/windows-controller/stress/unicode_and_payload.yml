@@ -1,0 +1,72 @@
+---
+- hosts: wsl
+  gather_facts: false
+  vars:
+    cyrillic: "Привет, мир"
+    chinese: "你好世界"
+    emoji: "🚀 deployed 🎉"
+    quoted: 'with "double" and $1.99 and \slashes'
+    long_list: "{{ range(50) | map('string') | list }}"
+    big_dict:
+      a: 1
+      b: "nested {{ cyrillic }}"
+      c: "{{ emoji }}"
+      d: [1, 2, 3]
+  tasks:
+    - name: "1. push 5MB file"
+      ansible.builtin.copy:
+        src: E:/ansible-test/big_payload.txt
+        dest: /tmp/big_payload.txt
+        mode: '0644'
+      register: big_copy
+
+    - name: "2. checksum remote"
+      ansible.builtin.stat:
+        path: /tmp/big_payload.txt
+        checksum_algorithm: sha1
+        get_checksum: true
+      register: remote_stat
+
+    - name: "3. assert size + content probes"
+      ansible.builtin.assert:
+        that:
+          - remote_stat.stat.size > 5000000
+          - remote_stat.stat.checksum == big_copy.checksum
+
+    - name: "4. push file with tricky name"
+      ansible.builtin.copy:
+        src: "E:/ansible-test/weird dir/name with spaces.txt"
+        dest: "/tmp/name with spaces.txt"
+      register: space_copy
+
+    - name: "5. read content back"
+      ansible.builtin.slurp:
+        src: "/tmp/name with spaces.txt"
+      register: space_slurp
+
+    - name: "6. assert unicode round-trip"
+      ansible.builtin.assert:
+        that:
+          - "'✓' in (space_slurp.content | b64decode)"
+          - "'€' in (space_slurp.content | b64decode)"
+
+    - name: "7. echo unicode vars back"
+      ansible.builtin.shell: printf "%s\n%s\n%s\n%s\n" "{{ cyrillic }}" "{{ chinese }}" "{{ emoji }}" "{{ quoted }}"
+      register: echo_res
+      changed_when: false
+
+    - name: "8. assert all unicode survived"
+      ansible.builtin.assert:
+        that:
+          - "cyrillic in echo_res.stdout"
+          - "chinese in echo_res.stdout"
+          - "'🚀' in echo_res.stdout"
+          - "'\\slashes' in echo_res.stdout"
+
+    - name: "9. cleanup"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /tmp/big_payload.txt
+        - /tmp/name with spaces.txt

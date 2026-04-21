@@ -1,0 +1,29 @@
+all:
+  vars:
+    ansible_connection: ssh
+    ansible_host: 192.168.73.7
+    ansible_user: root
+    ansible_ssh_private_key_file: E:/ansible-test/ssh/phase5_key
+    ansible_ssh_common_args: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=E:/ansible-test/ssh/known_hosts"
+    ansible_python_interpreter: /usr/bin/python3
+  hosts:
+    host01: ~
+    host02: ~
+    host03: ~
+    host04: ~
+    host05: ~
+    host06: ~
+    host07: ~
+    host08: ~
+    host09: ~
+    host10: ~
+    host11: ~
+    host12: ~
+    host13: ~
+    host14: ~
+    host15: ~
+    host16: ~
+    host17: ~
+    host18: ~
+    host19: ~
+    host20: ~

@@ -1,0 +1,7 @@
+---
+- hosts: all
+  gather_facts: false
+  tasks:
+    - ansible.builtin.ping:
+    - ansible.builtin.command: echo "host {{ inventory_hostname }} alive"
+      changed_when: false
