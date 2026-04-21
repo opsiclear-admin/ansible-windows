@@ -73,3 +73,71 @@ jobs:
 
       - name: ansible --version
         run: ansible --version
+
+  ansiballz-hash-windows:
+    name: AnsiballZ hash (windows)
+    runs-on: windows-2022
+    env:
+      PYTHONUTF8: '1'
+    outputs:
+      sha256: ${{ steps.hash.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install ansible-core (editable)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+      - name: Build payload + compute hash
+        id: hash
+        shell: bash
+        run: |
+          OUT=$(python hacking/windows-controller/ansiballz_hash.py)
+          echo "$OUT"
+          HASH=$(echo "$OUT" | grep '^sha256=' | cut -d= -f2)
+          echo "sha256=$HASH" >> "$GITHUB_OUTPUT"
+
+  ansiballz-hash-linux:
+    name: AnsiballZ hash (linux)
+    runs-on: ubuntu-latest
+    outputs:
+      sha256: ${{ steps.hash.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install ansible-core (editable)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+      - name: Build payload + compute hash
+        id: hash
+        run: |
+          OUT=$(python hacking/windows-controller/ansiballz_hash.py)
+          echo "$OUT"
+          HASH=$(echo "$OUT" | grep '^sha256=' | cut -d= -f2)
+          echo "sha256=$HASH" >> "$GITHUB_OUTPUT"
+
+  compare-ansiballz:
+    name: cross-platform AnsiballZ byte-identity
+    runs-on: ubuntu-latest
+    needs: [ansiballz-hash-windows, ansiballz-hash-linux]
+    steps:
+      - name: Compare AnsiballZ hashes
+        run: |
+          WIN_HASH='${{ needs.ansiballz-hash-windows.outputs.sha256 }}'
+          LIN_HASH='${{ needs.ansiballz-hash-linux.outputs.sha256 }}'
+          echo "Windows SHA256: $WIN_HASH"
+          echo "Linux   SHA256: $LIN_HASH"
+          if [ -z "$WIN_HASH" ] || [ -z "$LIN_HASH" ]; then
+            echo "Missing hash output from one of the build lanes"
+            exit 1
+          fi
+          if [ "$WIN_HASH" != "$LIN_HASH" ]; then
+            echo "AnsiballZ payload differs between platforms"
+            exit 1
+          fi
+          echo "AnsiballZ payloads are byte-identical across Windows and Linux controllers."
