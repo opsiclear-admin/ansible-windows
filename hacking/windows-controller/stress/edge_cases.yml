@@ -1,0 +1,145 @@
+---
+- hosts: wsl
+  gather_facts: false
+  vars:
+    # Deeply-nested dict (5 levels)
+    deep_var:
+      l1:
+        l2:
+          l3:
+            l4:
+              l5: "deepest value ✓"
+    # 100KB string in a var
+    huge_string: "{{ 'x' * 100000 }}"
+    # Dict with ~500 keys
+    big_dict: "{{ dict(range(500) | zip(range(500) | map('string'))) }}"
+  tasks:
+    - name: "1. deeply-nested var access"
+      ansible.builtin.assert:
+        that:
+          - deep_var.l1.l2.l3.l4.l5 == "deepest value ✓"
+
+    - name: "2. 100KB string pushed through as module arg"
+      ansible.builtin.copy:
+        content: "{{ huge_string }}"
+        dest: /tmp/huge.txt
+      register: huge_copy
+
+    - name: "3. verify size"
+      ansible.builtin.stat:
+        path: /tmp/huge.txt
+      register: huge_stat
+
+    - name: "4. assert 100KB arrived intact"
+      ansible.builtin.assert:
+        that:
+          - huge_stat.stat.size == 100000
+
+    - name: "5. big dict resolves + renders in shell"
+      ansible.builtin.shell: "echo dict_size={{ big_dict | length }}"
+      register: bd
+      changed_when: false
+    - ansible.builtin.assert:
+        that: "'dict_size=500' in bd.stdout"
+
+    - name: "6. extremely long stdout (200k chars)"
+      ansible.builtin.shell: "head -c 200000 /dev/urandom | base64 | tr -d '\n'"
+      register: huge_out
+      changed_when: false
+    - ansible.builtin.assert:
+        that: "huge_out.stdout | length > 200000"
+
+    - name: "7. non-utf8 / binary output via slurp"
+      ansible.builtin.shell: "dd if=/dev/urandom of=/tmp/binary.bin bs=1024 count=16 2>/dev/null"
+      changed_when: false
+    - ansible.builtin.slurp:
+        src: /tmp/binary.bin
+      register: bin_slurp
+    - ansible.builtin.stat:
+        path: /tmp/binary.bin
+      register: bin_stat
+    - ansible.builtin.assert:
+        that:
+          - bin_stat.stat.size == 16384
+          # b64 of 16384 bytes is 16384/3*4 = 21848, since 16384 % 3 == 1 we get 21848
+          - (bin_slurp.content | length) == 21848
+
+    - name: "8. shell command with null-byte-like content"
+      ansible.builtin.shell: |
+        printf 'has tabs\there\nand newlines\nand \x27single\x27 and "double" and $env'
+      register: tricky
+      changed_when: false
+    - ansible.builtin.assert:
+        that:
+          - "'tabs\there' in tricky.stdout"
+          - "'single' in tricky.stdout"
+          - "'\"double\"' in tricky.stdout"
+
+    - name: "9. very long remote path (200 char)"
+      ansible.builtin.file:
+        path: "/tmp/{{ 'a' * 190 }}"
+        state: touch
+        mode: '0644'
+    - ansible.builtin.stat:
+        path: "/tmp/{{ 'a' * 190 }}"
+      register: long_path_stat
+    - ansible.builtin.assert:
+        that: long_path_stat.stat.exists
+
+    - name: "10. until exhaustion"
+      ansible.builtin.command: "false"
+      register: retries_res
+      retries: 3
+      delay: 0
+      until: retries_res is succeeded
+      ignore_errors: true
+      changed_when: false
+    - ansible.builtin.assert:
+        that:
+          - retries_res.attempts >= 3
+          - retries_res.failed
+
+    - name: "11. block with when-level gate (skipped block)"
+      when: false
+      block:
+        - ansible.builtin.fail:
+            msg: "SHOULD NOT RUN"
+        - ansible.builtin.fail:
+            msg: "SHOULD NOT RUN EITHER"
+    - ansible.builtin.debug:
+        msg: "past skipped block"
+
+    - name: "12. handler chain notify"
+      ansible.builtin.debug:
+        msg: "trigger h_a"
+      changed_when: true
+      notify: h_a
+
+    - name: "13. flush"
+      ansible.builtin.meta: flush_handlers
+
+    - name: "14. verify both handlers ran"
+      ansible.builtin.assert:
+        that:
+          - handler_a_ran | default(false)
+          - handler_b_ran | default(false)
+
+    - name: "15. cleanup"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /tmp/huge.txt
+        - /tmp/binary.bin
+        - "/tmp/{{ 'a' * 190 }}"
+
+  handlers:
+    - name: h_a
+      ansible.builtin.set_fact:
+        handler_a_ran: true
+      changed_when: true
+      notify: h_b
+
+    - name: h_b
+      ansible.builtin.set_fact:
+        handler_b_ran: true
