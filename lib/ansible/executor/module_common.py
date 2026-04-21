@@ -746,6 +746,13 @@ def _make_zinfo(filename: str, date_time: datetime.datetime, zf: zipfile.ZipFile
         date_time=date_time.utctimetuple()[:6],
     )
 
+    # Normalize the creator-OS byte so the same module source produces
+    # byte-identical zip payloads whether the controller is POSIX or
+    # Windows. Default is platform-dependent (0 on Windows, 3 on Unix),
+    # which leaks into every zip entry header. The payload is destined
+    # for a remote POSIX target, so unix (3) is the correct fixed value.
+    zinfo.create_system = 3
+
     if zf:
         zinfo.compress_type = zf.compression
 
