@@ -147,8 +147,9 @@ def _get_ansiballz_code(shebang: str) -> str:
 
 # dirname(dirname(dirname(site-packages/ansible/executor/module_common.py) == site-packages
 # Do this instead of getting site-packages from distutils.sysconfig so we work when we
-# haven't been installed
-site_packages = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+# haven't been installed. Normalize to POSIX separators so the regex compiled below
+# matches module paths after they've been similarly normalized by _get_ansible_module_fqn.
+site_packages = os.path.dirname(os.path.dirname(os.path.dirname(__file__))).replace(os.sep, '/')
 CORE_LIBRARY_PATH_RE = re.compile(r'%s/(?P<path>ansible/modules/.*)\.(py|ps1)$' % re.escape(site_packages))
 COLLECTION_PATH_RE = re.compile(r'/(?P<path>ansible_collections/[^/]+/[^/]+/plugins/modules/.*)\.(py|ps1)$')
 
@@ -656,7 +657,11 @@ class LegacyModuleUtilLocator(ModuleUtilLocatorBase):
         # find_spec needs the full module name
         self._info = info = importlib.machinery.PathFinder.find_spec('.'.join(name_parts), paths)
         if info is not None and info.origin is not None and os.path.splitext(info.origin)[1] in importlib.machinery.SOURCE_SUFFIXES:
-            self.is_package = info.origin.endswith('/__init__.py')
+            # Use os.path.basename rather than a literal '/__init__.py' suffix so this
+            # works regardless of the controller's path separator. On Windows,
+            # info.origin comes back with backslashes and the old suffix check never
+            # matched, causing every package to be mis-bundled as a single-file module.
+            self.is_package = os.path.basename(info.origin) == '__init__.py'
             path = info.origin
         else:
             return False
@@ -1034,6 +1039,11 @@ def _get_ansible_module_fqn(module_path):
         (non-module plugins, etc)
     """
     remote_module_fqn = None
+
+    # Normalize platform path separators so the POSIX-shaped regexes match on
+    # a Windows controller. Without this every core module falls through to
+    # the `ansible.legacy.*` fallback path at the caller.
+    module_path = module_path.replace(os.sep, '/')
 
     # Is this a core module?
     match = CORE_LIBRARY_PATH_RE.search(module_path)
