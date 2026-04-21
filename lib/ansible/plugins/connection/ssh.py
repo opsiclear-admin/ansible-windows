@@ -421,12 +421,14 @@ import json
 import os
 import pathlib
 import re
+import secrets
 import selectors
 import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import typing as t
 
@@ -590,6 +592,217 @@ class _PipePoller:
             # Reader threads are daemons and will exit once the pipes close.
             return
         self._selector.close()
+
+
+class _SSHSession:
+    """
+    Persistent ssh subprocess for reusing the TCP/auth session across
+    multiple exec_command calls on a single Connection.
+
+    POSIX users should rely on ssh ControlMaster/ControlPersist, which is
+    strictly superior; this class exists because Microsoft OpenSSH's
+    AF_UNIX mux listener is unreliable on Windows. Gated on
+    ``sys.platform == 'win32'`` at the caller; the class itself works on
+    POSIX too if you ever want to use it.
+
+    Protocol:
+
+        Each exec writes a command payload to the persistent sh's stdin:
+
+            {cmd}
+            __rc=$?; printf '\\n%s_%s\\n' '<end_stdout>' "$__rc"
+            printf '%s\\n' '<end_stderr>' >&2
+
+        and then reads stdout until ``<end_stdout>_<rc>\\n`` appears.
+        ``<end_stderr>`` is a matching marker on the stderr stream so we
+        can tell where this exec's stderr ends and the next one's begins.
+
+    Limitations:
+
+    - No ``in_data`` (stdin is reserved for the command stream).
+    - No interactive become prompt (the ansible state machine that
+      watches stderr for sudo prompts is not hooked up here; callers
+      must not pass sudoable+become-with-password through the pool).
+    - If the remote shell or the connection dies mid-exec, the session
+      is closed and the caller should fall back to a fresh ssh.
+    """
+
+    _MAX_READ_WAIT_AFTER_RC = 0.5  # seconds to wait for tail stderr after rc
+
+    def __init__(self, full_ssh_cmd: list[bytes], host: str) -> None:
+        # `full_ssh_cmd` is the complete argv list built by
+        # Connection._build_command, minus the trailing remote command:
+        # ssh + all -o options + [-T, user@host, /bin/sh, -s].
+        self._cmd = list(full_ssh_cmd)
+        self._host = host
+        self._proc: subprocess.Popen | None = None
+        self._poller: _PipePoller | None = None
+        self._lock = threading.Lock()
+        self._stderr_buf = b''
+
+    def _start(self) -> None:
+        # Default Popen bufsize (-1, BufferedReader) — don't set bufsize=0 or the
+        # stdout/stderr pipes come back as raw FileIO without `.read1()`, which
+        # _PipePoller's reader threads rely on.
+        popen_kwargs: dict[str, t.Any] = dict(
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if sys.platform == 'win32':
+            popen_kwargs['creationflags'] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            popen_kwargs['start_new_session'] = True
+        display.vvv(f'SSH: opening persistent session {self._cmd!r}', host=self._host)
+        self._proc = subprocess.Popen(self._cmd, **popen_kwargs)
+        self._poller = _PipePoller(self._proc)
+        # Hand-shake: ask the remote shell to emit a ready marker so we know
+        # it's alive and reading stdin. Anything printed before this (MOTD,
+        # shell init) is drained and dropped.
+        ready_marker = b'__ANSIBLE_SESSION_READY_' + secrets.token_hex(8).encode()
+        assert self._proc.stdin is not None
+        self._proc.stdin.write(b"printf '%s\\n' '" + ready_marker + b"'\n")
+        self._proc.stdin.flush()
+        self._drain_until(ready_marker, timeout=30)
+
+    def _drain_until(self, marker: bytes, timeout: float) -> bytes:
+        """Read stdout until *marker* appears, return the bytes before it."""
+        assert self._proc is not None and self._poller is not None
+        buf = b''
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise AnsibleConnectionFailure(
+                    f"ssh session handshake timed out after {timeout}s"
+                )
+            events = self._poller.read_events(min(1.0, remaining))
+            for name, chunk in events:
+                if name == 'stdout':
+                    if not chunk:
+                        raise AnsibleConnectionFailure(
+                            "ssh session stdout closed during handshake"
+                        )
+                    buf += chunk
+                elif name == 'stderr':
+                    # Stash early stderr for later inspection, but don't require it.
+                    self._stderr_buf += chunk
+            if marker in buf:
+                idx = buf.find(marker)
+                return buf[:idx]
+
+    def exec(self, cmd_bytes: bytes, timeout: float) -> tuple[int, bytes, bytes]:
+        """
+        Run ``cmd_bytes`` in the persistent shell and return (rc, stdout, stderr).
+        Raises AnsibleConnectionFailure if the session dies or hangs.
+        """
+        with self._lock:
+            if self._proc is None or self._proc.poll() is not None:
+                self._start()
+
+            marker = secrets.token_hex(12).encode()
+            end_stdout = b'__ANSIBLE_END_STDOUT_' + marker
+            end_stderr = b'__ANSIBLE_END_STDERR_' + marker
+            # Wrap the command in a brace group so `$?` captures *its* exit
+            # status, not the last printf's. Dash (Ubuntu /bin/sh) rejects
+            # `{ cmd\n; }` as a syntax error — the leading `;` is treated as
+            # a null command. Use `\n}\n` instead: the newline terminates
+            # cmd, `}` closes the group, next newline ends the group stmt.
+            payload = (
+                b'{\n' + cmd_bytes + b'\n}\n__ansible_rc=$?\n'
+                + b"printf '\\n%s_%s\\n' '" + end_stdout + b"' \"$__ansible_rc\"\n"
+                + b"printf '%s\\n' '" + end_stderr + b"' 1>&2\n"
+            )
+            assert self._proc is not None and self._proc.stdin is not None and self._poller is not None
+            try:
+                self._proc.stdin.write(payload)
+                self._proc.stdin.flush()
+            except (OSError, BrokenPipeError) as ex:
+                self._close_locked()
+                raise AnsibleConnectionFailure(f'ssh session died writing command: {ex}')
+
+            stdout = b''
+            stderr = self._stderr_buf
+            self._stderr_buf = b''
+            rc: int | None = None
+            deadline = time.monotonic() + timeout
+            rc_seen_at: float | None = None
+
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self._close_locked()
+                    raise AnsibleConnectionFailure(
+                        f"ssh session exec timed out after {timeout}s"
+                    )
+                if rc is not None and rc_seen_at is not None:
+                    # Already have the rc; only drain a short tail of stderr so
+                    # we don't starve stderr markers that arrive slightly late.
+                    if end_stderr in stderr:
+                        break
+                    if time.monotonic() - rc_seen_at > self._MAX_READ_WAIT_AFTER_RC:
+                        break
+                    wait = min(0.05, self._MAX_READ_WAIT_AFTER_RC - (time.monotonic() - rc_seen_at))
+                else:
+                    wait = min(1.0, remaining)
+
+                events = self._poller.read_events(wait)
+                for name, chunk in events:
+                    if name == 'stdout':
+                        if not chunk:
+                            self._close_locked()
+                            raise AnsibleConnectionFailure("ssh session stdout closed during exec")
+                        stdout += chunk
+                    elif name == 'stderr':
+                        stderr += chunk
+                if rc is None:
+                    idx = stdout.find(end_stdout)
+                    if idx >= 0:
+                        after = stdout[idx + len(end_stdout):]
+                        # marker format: `<marker>_<rc>\n`
+                        if after.startswith(b'_'):
+                            rc_line, _, _ = after[1:].partition(b'\n')
+                            try:
+                                rc = int(rc_line.strip())
+                            except ValueError:
+                                rc = 255
+                            rc_seen_at = time.monotonic()
+                            # Strip the marker tail from stdout for the caller.
+                            stdout = stdout[:idx].rstrip(b'\n')
+
+            # Trim stderr up to (and not including) its end marker.
+            sidx = stderr.find(end_stderr)
+            if sidx >= 0:
+                stderr_clean = stderr[:sidx].rstrip(b'\n')
+            else:
+                stderr_clean = stderr.rstrip(b'\n')
+
+            assert rc is not None  # loop exits only once rc is seen
+            return rc, stdout, stderr_clean
+
+    def _close_locked(self) -> None:
+        if self._proc is None:
+            return
+        try:
+            if self._proc.stdin:
+                self._proc.stdin.close()
+        except Exception:
+            pass
+        try:
+            self._proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            try:
+                self._proc.terminate()
+            except Exception:
+                pass
+        if self._poller is not None:
+            self._poller.close()
+        self._proc = None
+        self._poller = None
+
+    def close(self) -> None:
+        with self._lock:
+            self._close_locked()
 
 
 def _handle_error(
@@ -781,6 +994,11 @@ class Connection(ConnectionBase):
         self._tty_parser.add_argument('-o', action='append')
 
         self._populated_agent: pathlib.Path | None = None
+
+        # Phase 5.5: persistent ssh subprocess reused across exec_command calls
+        # on Windows controllers (POSIX should use ControlMaster/ControlPersist).
+        # Lazily created on first eligible exec_command.
+        self._ssh_session: _SSHSession | None = None
 
     # The connection is created by running ssh/scp/sftp from the exec_command,
     # put_file, and fetch_file methods, so we don't need to do any connection
@@ -1698,6 +1916,41 @@ class Connection(ConnectionBase):
         # to disable it as a troubleshooting method.
         use_tty = self.get_option('use_tty')
 
+        # Phase 5.5: try the persistent ssh session when we can. Windows-only
+        # because POSIX users have ControlMaster/ControlPersist, which is
+        # strictly superior. Gated conservatively:
+        # - no stdin data (our protocol owns stdin),
+        # - no interactive prompt expected (no -tt),
+        # - POSIX remote shell (the marker protocol uses /bin/sh builtins).
+        pool_remote_cmd = cmd if isinstance(cmd, bytes) else to_bytes(cmd)
+        remote_is_posix = not getattr(self._shell, "_IS_WINDOWS", False)
+        can_pool = (
+            sys.platform == 'win32'
+            and in_data is None
+            and remote_is_posix
+            and not (sudoable and use_tty)
+        )
+        if can_pool:
+            if self._ssh_session is None:
+                pool_cmd = self._build_command(
+                    ssh_executable, 'ssh', '-T', self.host, '/bin/sh', '-s',
+                )
+                self._ssh_session = _SSHSession(pool_cmd, host=self.host)
+            try:
+                pool_timeout = float(2 + self.get_option('timeout')) + 300
+                (returncode, stdout, stderr) = self._ssh_session.exec(pool_remote_cmd, timeout=pool_timeout)
+                return (returncode, stdout, stderr)
+            except AnsibleConnectionFailure as ex:
+                display.warning(
+                    f"SSH session pool hit an error, falling back to fresh ssh invocation: {ex}"
+                )
+                try:
+                    self._ssh_session.close()
+                except Exception:
+                    pass
+                self._ssh_session = None
+                # fall through to legacy path
+
         args: tuple[str, ...]
         if not in_data and sudoable and use_tty:
             args = ('-tt', self.host, cmd)
@@ -1765,6 +2018,12 @@ class Connection(ConnectionBase):
         self.close()
 
     def close(self) -> None:
+        if self._ssh_session is not None:
+            try:
+                self._ssh_session.close()
+            except Exception:
+                pass
+            self._ssh_session = None
         self._connected = False
 
     @property
