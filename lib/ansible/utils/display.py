@@ -220,8 +220,10 @@ class FilterUserInjector(logging.Filter):
         username = getpass.getuser()
     except (ImportError, KeyError, OSError):
         # deprecated: description='only OSError is required for Python 3.13+' python_version='3.12'
-        # people like to make containers w/o actual valid passwd/shadow and use host uids
-        username = 'uid=%s' % os.getuid()
+        # people like to make containers w/o actual valid passwd/shadow and use host uids.
+        # `os.getuid` does not exist on Windows; route through the compat shim which returns 0 there.
+        from ansible.compat.posix import getuid
+        username = 'uid=%s' % getuid()
 
     def filter(self, record):
         record.user = FilterUserInjector.username

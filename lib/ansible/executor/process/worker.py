@@ -106,6 +106,15 @@ class WorkerProcess(multiprocessing_context.Process):  # type: ignore[name-defin
         from ansible.plugins.loader import _get_adjacent_plugin_basedirs_snapshot
         self._extra_plugin_basedirs = _get_adjacent_plugin_basedirs_snapshot()
 
+        # Snapshot the parent's LocalManager RPC endpoint (address + authkey).
+        # Under fork this is inherited via COW and unused; under spawn the
+        # child otherwise starts a fresh, empty RPC server with a different
+        # authkey and `AutoRegisterRPC.get_client()` calls never reach the
+        # controller. See `_bootstrap_spawn_child` + `LocalManager.configure_remote_endpoint`.
+        from ansible._internal import _rpc_host as _rpc_host_mod
+        _rpc_singleton = _rpc_host_mod.LocalManager.shared_instance()
+        self._rpc_endpoint = (_rpc_singleton.address, _rpc_singleton.authkey)
+
     def _term(self, signum, frame) -> None:
         """In child termination when notified by the parent"""
         from ansible.compat.posix import killpg
@@ -178,6 +187,12 @@ class WorkerProcess(multiprocessing_context.Process):  # type: ignore[name-defin
                 add_all_plugin_dirs(basedir)
             except Exception:
                 pass
+        # Route LocalManager.shared_instance() at the parent's already-running
+        # RPC server so AutoRegisterRPC.get_client() from this worker talks to
+        # the controller, not a fresh empty server inside this worker.
+        from ansible._internal._rpc_host import LocalManager
+        _rpc_address, _rpc_authkey = self._rpc_endpoint
+        LocalManager.configure_remote_endpoint(_rpc_address, _rpc_authkey)
 
     def _detach(self) -> None:
         """

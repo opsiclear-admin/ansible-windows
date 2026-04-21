@@ -2,17 +2,31 @@
 # GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
 from __future__ import annotations
 
-import fcntl
-import io
-import os
-import pickle
-import signal
-import socket
 import sys
-import time
-import traceback
-import errno
-import json
+
+# This stub implements the persistent-connection socket worker, which uses
+# fork + a Unix-domain socket + SIGALRM-based idle timeouts. It's POSIX-only
+# by design. Guard at module import so a Windows controller that accidentally
+# loads it gets a clear error rather than "AttributeError: module 'fcntl'".
+if sys.platform == 'win32':
+    raise RuntimeError(
+        "ansible-connection (persistent socket worker) is not supported on a "
+        "Windows controller. It uses POSIX-only primitives (fcntl, SIGALRM, "
+        "fork) and has no Windows equivalent. Persistent connections are only "
+        "needed by network_cli / netconf / httpapi / grpc connection plugins, "
+        "which the windows-controller port treats as out of scope."
+    )
+
+import fcntl  # noqa: E402 — guard above ensures POSIX
+import io  # noqa: E402
+import os  # noqa: E402
+import pickle  # noqa: E402
+import signal  # noqa: E402
+import socket  # noqa: E402
+import time  # noqa: E402
+import traceback  # noqa: E402
+import errno  # noqa: E402
+import json  # noqa: E402
 
 from contextlib import contextmanager
 

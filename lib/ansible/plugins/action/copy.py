@@ -138,7 +138,9 @@ def _walk_dirs(topdir, base_path=None, local_follow=False, trailing_slash_detect
                             new_parents = set()
                             parent_dir_list = os.path.dirname(dirpath).split(os.path.sep)
                             for parent in range(len(parent_dir_list), 0, -1):
-                                parent_stat = os.stat(u'/'.join(parent_dir_list[:parent]))
+                                # Rebuild with the platform separator we split on — not a literal '/',
+                                # which silently produces a relative path on Windows and fails os.stat.
+                                parent_stat = os.stat(os.path.sep.join(parent_dir_list[:parent]))
                                 if (parent_stat.st_dev, parent_stat.st_ino) in parent_dirs:
                                     # Reached the point at which the directory
                                     # tree is already known.  Don't add any

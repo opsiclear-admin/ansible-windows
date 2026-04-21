@@ -71,22 +71,46 @@ def register_at_fork(*, after_in_child: t.Callable[[], None]) -> None:
 if IS_WINDOWS:
     import msvcrt as _msvcrt
 
+    import time as _time
+
+    # Default overall timeout before we give up and raise.
+    # 10 minutes = generous for most Windows AV scanners; callers that want
+    # unbounded waits can pass an explicit large value (not currently exposed).
+    _FLOCK_TOTAL_TIMEOUT = 600.0
+    # Wait-between-retries policy: exponential backoff starting at 50 ms,
+    # capped at 2 s, so a contended lock uses ~2 s of wall clock per retry
+    # rather than pegging a CPU core in a tight loop.
+    _FLOCK_INITIAL_SLEEP = 0.05
+    _FLOCK_MAX_SLEEP = 2.0
+
     @contextlib.contextmanager
     def flock_exclusive(path: str) -> t.Iterator[None]:
         """Blocking exclusive lock over `path` using msvcrt.locking.
 
-        msvcrt.locking(LK_LOCK) blocks for ~10 seconds then raises; wrap in
-        a retry loop for truly-blocking semantics. Locks 1 byte at offset 0.
+        `msvcrt.locking(LK_LOCK, 1)` retries internally for about 10 seconds
+        and then raises `OSError`. We loop past that with exponential backoff
+        so a contended lock doesn't peg a CPU core, and we cap the total wait
+        at ``_FLOCK_TOTAL_TIMEOUT`` so a stuck AV scanner or an orphaned lock
+        holder doesn't hang ansible-playbook forever — raise `TimeoutError`
+        instead.
         """
         with open(path, 'a+') as fh:
             fh.seek(0)
             fd = fh.fileno()
+            deadline = _time.monotonic() + _FLOCK_TOTAL_TIMEOUT
+            sleep_for = _FLOCK_INITIAL_SLEEP
             while True:
                 try:
                     _msvcrt.locking(fd, _msvcrt.LK_LOCK, 1)
                     break
                 except OSError:
-                    continue
+                    if _time.monotonic() >= deadline:
+                        raise TimeoutError(
+                            f"timed out waiting for exclusive lock on {path!r} "
+                            f"after {_FLOCK_TOTAL_TIMEOUT:.0f}s"
+                        )
+                    _time.sleep(sleep_for)
+                    sleep_for = min(sleep_for * 2, _FLOCK_MAX_SLEEP)
             try:
                 yield
             finally:

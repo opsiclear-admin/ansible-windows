@@ -67,12 +67,39 @@ class LocalServer(Server):
         return super().serve_forever()
 
 
+@dataclasses.dataclass(frozen=True)
+class _RemoteEndpoint:
+    """Address/authkey pair pointing at a parent-process LocalManager.
+
+    Used by spawn-born workers: the child cannot inherit the parent's
+    already-running manager via fork COW, and calling `shared_instance()`
+    fresh would spin up a *new* server with a new authkey — subsequent
+    `get_client()` calls would then connect to the child's own empty
+    server instead of the controller's. Instead the parent hands the
+    child this endpoint during bootstrap (`WorkerProcess._bootstrap_spawn_child`),
+    and the child sets it via `LocalManager.configure_remote_endpoint()`
+    before any RPC call.
+    """
+    address: t.Any
+    authkey: bytes
+
+
 class LocalManager(BaseManager):
     """Customized BaseManager for in-proc usage."""
 
     _Server = LocalServer  # override BaseManager to use custom Server subclass
     _shared_instance: t.ClassVar[t.Self | None] = None
     _shared_lock = threading.Lock()
+    _remote_endpoint: t.ClassVar[_RemoteEndpoint | None] = None
+
+    @classmethod
+    def configure_remote_endpoint(cls, address: t.Any, authkey: bytes) -> None:
+        """Called by a spawn-born worker to route shared_instance() at the
+        parent's already-running manager rather than starting a fresh one.
+        Idempotent; no-op on a fork child because the shared instance is
+        inherited via COW.
+        """
+        cls._remote_endpoint = _RemoteEndpoint(address=address, authkey=authkey)
 
     def __init__(self):
         type(self)._current = self  # HACK: ew
@@ -104,8 +131,15 @@ class LocalManager(BaseManager):
             )
 
     @classmethod
-    def shared_instance(cls) -> t.Self:
-        """Access a lazily-created LocalManager singleton."""
+    def shared_instance(cls) -> t.Any:
+        """Access a lazily-created LocalManager singleton, or — on a spawn
+        worker that has been configured via `configure_remote_endpoint` — a
+        proxy object exposing the parent's address and authkey so that
+        `get_client()` downstream connects to the parent's server rather
+        than starting a fresh server inside the worker.
+        """
+        if cls._remote_endpoint is not None:
+            return cls._remote_endpoint
         if not cls._shared_instance:
             with cls._shared_lock:
                 if not cls._shared_instance:

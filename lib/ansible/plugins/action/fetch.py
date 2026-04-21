@@ -151,8 +151,10 @@ class ActionModule(ActionBase):
                     if os.path.isdir(to_bytes(dest, errors='surrogate_or_strict')):
                         raise AnsibleActionFail(
                             f"calculated dest '{dest}' is an existing directory, use another path that does not point to an existing directory")
-                if not dest.startswith("/"):
-                    # if dest does not start with "/", we'll assume a relative path
+                if not os.path.isabs(dest):
+                    # relative path on the controller — resolve against the playbook basedir.
+                    # Must use os.path.isabs rather than startswith('/') so Windows controllers
+                    # (where `C:\...` absolute paths never start with '/') don't silently re-dwim.
                     dest = self._loader.path_dwim(dest)
             else:
                 # files are saved in dest dir, with a subdir for each host, then the filename

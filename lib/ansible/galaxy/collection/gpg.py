@@ -12,6 +12,8 @@ import contextlib
 import inspect
 import os
 import subprocess
+import sys
+import tempfile
 import typing as t
 
 from dataclasses import dataclass, fields as dc_fields
@@ -49,14 +51,28 @@ def run_gpg_verify(
     keyring: str,
     display: Display,
 ) -> tuple[str, int]:
-    status_fd_read, status_fd_write = os.pipe()
+    # POSIX uses os.pipe() + Popen(pass_fds=...) to receive gpg's machine-readable
+    # status stream. `pass_fds` is not supported on Windows (Popen raises
+    # ValueError) and os.pipe() fds can't be inherited across CreateProcess
+    # anyway. Instead route status through a temp file via gpg's --status-file
+    # option, which GnuPG 2.x supports on every platform.
+    use_status_file = sys.platform == 'win32'
+
+    status_fd_read = status_fd_write = None
+    status_file_path: str | None = None
+    if use_status_file:
+        # tempfile.mkstemp returns an open fd; close it and let gpg open the path itself.
+        _fd, status_file_path = tempfile.mkstemp(prefix='ansible-gpg-status-', suffix='.txt')
+        os.close(_fd)
+    else:
+        status_fd_read, status_fd_write = os.pipe()
 
     # running the gpg command will create the keyring if it does not exist
     remove_keybox = not os.path.exists(keyring)
 
     cmd = [
         'gpg',
-        f'--status-fd={status_fd_write}',
+        f'--status-file={status_file_path}' if use_status_file else f'--status-fd={status_fd_write}',
         '--verify',
         '--batch',
         '--no-tty',
@@ -68,34 +84,50 @@ def run_gpg_verify(
     cmd_str = ' '.join(cmd)
     display.vvvv(f"Running command '{cmd}'")
 
+    popen_kwargs: dict[str, t.Any] = dict(
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        encoding='utf8',
+    )
+    if not use_status_file:
+        popen_kwargs['pass_fds'] = (status_fd_write,)
+
     try:
-        p = subprocess.Popen(
-            cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            pass_fds=(status_fd_write,),
-            encoding='utf8',
-        )
+        p = subprocess.Popen(cmd, **popen_kwargs)
     except (FileNotFoundError, subprocess.SubprocessError) as err:
+        if use_status_file and status_file_path:
+            with contextlib.suppress(OSError):
+                os.remove(status_file_path)
         raise AnsibleError(
             f"Failed during GnuPG verification with command '{cmd_str}': {err}"
         ) from err
     else:
         stdout, stderr = p.communicate(input=signature)
     finally:
-        os.close(status_fd_write)
+        if not use_status_file:
+            os.close(status_fd_write)
 
     if remove_keybox:
         with contextlib.suppress(OSError):
             os.remove(keyring)
 
-    with os.fdopen(status_fd_read) as f:
-        stdout = f.read()
-        display.vvvv(
-            f"stdout: \n{stdout}\nstderr: \n{stderr}\n(exit code {p.returncode})"
-        )
-        return stdout, p.returncode
+    try:
+        if use_status_file:
+            with open(status_file_path, 'r', encoding='utf8') as f:
+                stdout = f.read()
+        else:
+            with os.fdopen(status_fd_read) as f:
+                stdout = f.read()
+    finally:
+        if use_status_file and status_file_path:
+            with contextlib.suppress(OSError):
+                os.remove(status_file_path)
+
+    display.vvvv(
+        f"stdout: \n{stdout}\nstderr: \n{stderr}\n(exit code {p.returncode})"
+    )
+    return stdout, p.returncode
 
 
 def parse_gpg_errors(status_out: str) -> t.Iterator[GpgBaseError]:
