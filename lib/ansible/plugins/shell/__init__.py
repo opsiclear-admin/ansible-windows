@@ -90,7 +90,12 @@ class ShellBase(AnsiblePlugin):
         return ' '.join(['%s=%s' % (k, self.quote(str(v))) for k, v in kwargs.items()])
 
     def join_path(self, *args):
-        return os.path.join(*args)
+        # The shell plugin represents the *remote* shell, which is POSIX for
+        # every subclass of ShellBase. Using `os.path.join` on a Windows
+        # controller produces backslash separators that the remote shell then
+        # chokes on ("cannot access '...\'"). Force POSIX semantics.
+        import posixpath
+        return posixpath.join(*args)
 
     # some shells (eg, powershell) are snooty about filenames/extensions, this lets the shell plugin have a say
     def get_remote_filename(self, pathname):
