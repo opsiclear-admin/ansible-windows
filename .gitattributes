@@ -1,8 +1,14 @@
 .github/ export-ignore
 
-# Windows-controller: AnsiballZ wrapper sources ship to POSIX targets.
-# Enforce LF regardless of core.autocrlf on Windows dev clones.
+# Windows-controller: files below flow into AnsiballZ payloads that ship to
+# POSIX targets. Force LF regardless of core.autocrlf on Windows dev clones.
+# Patterns use `**/*.py` so they match at any depth — `**.py` does NOT recurse
+# in git's gitignore-syntax attribute matcher.
+*.py                                      text eol=lf
+*.yml                                     text eol=lf
+*.yaml                                    text eol=lf
 lib/ansible/_internal/_ansiballz/**       text eol=lf
+# PowerShell / exec_wrapper code runs on Windows targets and needs CRLF.
 lib/ansible/executor/powershell/**        text eol=crlf
-lib/ansible/module_utils/**.py            text eol=lf
-lib/ansible/modules/**.py                 text eol=lf
+*.ps1                                     text eol=crlf
+*.psm1                                    text eol=crlf

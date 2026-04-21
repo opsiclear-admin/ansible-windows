@@ -988,12 +988,15 @@ def recursive_finder(
                 raise AnsibleError('Embed must be an ansible/ansible_collections resource.', obj=embed.resource)
 
             display.vvvvv(f"Including embed file {rel_path}")
-            zf.writestr(_make_zinfo(str_path := str(rel_path), date_time, zf=zf), path.read_bytes())
+            # Use POSIX separators in zip member paths so the output is stable
+            # across controller OSes. str(PurePath) uses `\` on Windows, which
+            # would produce invalid zip filenames.
+            zf.writestr(_make_zinfo(str_path := rel_path.as_posix(), date_time, zf=zf), path.read_bytes())
             written_files.add(str_path)
             for parent in rel_path.parents:
                 if not parent.name:
                     continue
-                p_init = str(parent / '__init__.py')
+                p_init = (parent / '__init__.py').as_posix()
                 if p_init not in written_files:
                     display.vvvvv(f"Including parent init file {p_init}")
                     zf.writestr(_make_zinfo(p_init, date_time, zf=zf), b'')
