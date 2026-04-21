@@ -170,22 +170,29 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $pw = ConvertTo-SecureString 'AnsibleCIp@ssw0rd!' -AsPlainText -Force
+          # Random 20-char password avoiding dictionary-match heuristics
+          # Windows Server can otherwise reject passwords that contain the username or "password".
+          $pw_plain = -join ((65..90) + (97..122) + (48..57) | Get-Random -Count 18 | ForEach-Object {[char]$_}) + '!A9'
+          $pw = ConvertTo-SecureString $pw_plain -AsPlainText -Force
           New-LocalUser -Name 'ansibleci' -Password $pw -PasswordNeverExpires -AccountNeverExpires | Out-Null
           Add-LocalGroupMember -Group 'Administrators' -Member 'ansibleci'
+          # Write the generated password to a file the next step will read.
+          # Note: this file stays on the ephemeral CI runner; it is not an artifact.
+          $pw_plain | Out-File -NoNewline -Encoding ascii "$env:RUNNER_TEMP\ansibleci_pw.txt"
 
       - name: Write inventory
         shell: bash
         run: |
           mkdir -p _ci
-          cat > _ci/winrm_inv.yml <<'EOF'
+          PW=$(cat "$RUNNER_TEMP/ansibleci_pw.txt")
+          cat > _ci/winrm_inv.yml <<EOF
           all:
             hosts:
               winlocal:
                 ansible_connection: winrm
                 ansible_host: 127.0.0.1
                 ansible_user: ansibleci
-                ansible_password: "AnsibleCIp@ssw0rd!"
+                ansible_password: "$PW"
                 ansible_port: 5985
                 ansible_winrm_transport: basic
                 ansible_winrm_scheme: http
