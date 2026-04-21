@@ -443,6 +443,8 @@ try:
     import pty
 except ImportError:
     pty = None  # type: ignore[assignment]
+
+from ansible.compat import posix as _posix
 from functools import wraps
 from multiprocessing.shared_memory import SharedMemory
 
@@ -490,6 +492,104 @@ SSH_ASKPASS_DEFAULT_PROMPT = 'assword'
 class AnsibleControlPersistBrokenPipeError(AnsibleError):
     """ ControlPersist broken pipe """
     pass
+
+
+class _PipePoller:
+    """
+    Platform-dispatched poller over the ssh subprocess stdout/stderr pipes.
+
+    POSIX path keeps the legacy fcntl/selectors approach: the pipes are set to
+    non-blocking and a `selectors.DefaultSelector` multiplexes reads. That
+    hasn't worked on Windows since selectors on Windows only recognize sockets
+    as "select-able"; arbitrary pipe file descriptors are not. Windows path
+    uses one reader thread per pipe draining into a shared queue, which the
+    main thread pops with a timeout — same event semantics, different primitive.
+
+    Both paths expose the same event shape: ``read_events(timeout)`` yields a
+    list of ``(name, chunk)`` tuples where ``name`` is ``'stdout'`` or
+    ``'stderr'`` and ``chunk`` is bytes (empty = EOF for that stream).
+    """
+
+    def __init__(self, proc: subprocess.Popen) -> None:
+        self._proc = proc
+        if sys.platform == 'win32':
+            import queue as _queue
+            import threading
+            self._q: '_queue.Queue[tuple[str, bytes]]' = _queue.Queue()
+            self._open: set[str] = {'stdout', 'stderr'}
+
+            def _drain(fh: t.IO[bytes], name: str) -> None:
+                try:
+                    while True:
+                        # read1() returns whatever's available in the buffer (or blocks for
+                        # at least one byte); returns b'' when the pipe closes.
+                        chunk = fh.read1(4096)
+                        self._q.put((name, chunk))
+                        if chunk == b'':
+                            return
+                except Exception:
+                    self._q.put((name, b''))
+
+            assert proc.stdout is not None and proc.stderr is not None
+            self._threads = [
+                threading.Thread(target=_drain, args=(proc.stdout, 'stdout'), daemon=True),
+                threading.Thread(target=_drain, args=(proc.stderr, 'stderr'), daemon=True),
+            ]
+            for t_ in self._threads:
+                t_.start()
+        else:
+            assert fcntl is not None  # POSIX path
+            assert proc.stdout is not None and proc.stderr is not None
+            for fh in (proc.stdout, proc.stderr):
+                fd = fh.fileno()
+                fcntl.fcntl(fd, fcntl.F_SETFL, fcntl.fcntl(fd, fcntl.F_GETFL) | os.O_NONBLOCK)
+            self._selector = selectors.DefaultSelector()
+            self._selector.register(proc.stdout, selectors.EVENT_READ, data='stdout')
+            self._selector.register(proc.stderr, selectors.EVENT_READ, data='stderr')
+
+    def read_events(self, timeout: float) -> list[tuple[str, bytes]]:
+        if sys.platform == 'win32':
+            import queue as _queue
+            events: list[tuple[str, bytes]] = []
+            try:
+                events.append(self._q.get(timeout=timeout))
+            except _queue.Empty:
+                return events
+            # Drain anything else already queued so we batch one event loop iteration.
+            while True:
+                try:
+                    events.append(self._q.get_nowait())
+                except _queue.Empty:
+                    break
+            return events
+
+        events: list[tuple[str, bytes]] = []
+        for key, _ev in self._selector.select(timeout):
+            fh = key.fileobj
+            chunk = fh.read() or b''
+            events.append((key.data, chunk))
+        return events
+
+    def mark_closed(self, name: str) -> None:
+        if sys.platform == 'win32':
+            self._open.discard(name)
+            return
+        stream = self._proc.stdout if name == 'stdout' else self._proc.stderr
+        try:
+            self._selector.unregister(stream)
+        except KeyError:
+            pass
+
+    def any_open(self) -> bool:
+        if sys.platform == 'win32':
+            return bool(self._open)
+        return bool(self._selector.get_map())
+
+    def close(self) -> None:
+        if sys.platform == 'win32':
+            # Reader threads are daemons and will exit once the pipes close.
+            return
+        self._selector.close()
 
 
 def _handle_error(
@@ -687,13 +787,6 @@ class Connection(ConnectionBase):
     # management here.
 
     def _connect(self) -> Connection:
-        if sys.platform == 'win32':
-            raise AnsibleError(
-                "The 'ssh' connection plugin is not yet supported on a Windows "
-                "controller. Use 'winrm' or 'psrp' for Windows targets, or wait "
-                "for the Phase 5 ssh subprocess wrapper in the windows-controller "
-                "branch."
-            )
         return self
 
     @staticmethod
@@ -784,7 +877,7 @@ class Connection(ConnectionBase):
                 display.vvv(f'SSH: SSH_AGENT adding {fingerprint} to agent', host=self.host)
                 client.add(
                     private_key,
-                    f'[added by ansible: PID={os.getpid()}, UID={os.getuid()}, EUID={os.geteuid()}, TIME={time.time()}]',
+                    f'[added by ansible: PID={os.getpid()}, UID={_posix.getuid()}, EUID={_posix.geteuid()}, TIME={time.time()}]',
                     C.config.get_config_value('SSH_AGENT_KEY_LIFETIME'),
                 )
             else:
@@ -895,9 +988,17 @@ class Connection(ConnectionBase):
 
         self.user = self.get_option('remote_user')
         if self.user:
+            # POSIX Popen passes argv as-is; on Windows, list2cmdline escapes the
+            # embedded `"`, which ssh then rejects as `command-line line 0: invalid quotes`.
+            # Drop the surrounding quotes on Windows — ssh's -o parser is fine with the
+            # bare value. On POSIX keep the historical quoting.
+            if sys.platform == 'win32':
+                user_opt = b'User=%s' % to_bytes(self.user, errors='surrogate_or_strict')
+            else:
+                user_opt = b'User="%s"' % to_bytes(self.user, errors='surrogate_or_strict')
             self._add_args(
                 b_command,
-                (b"-o", b'User="%s"' % to_bytes(self.user, errors='surrogate_or_strict')),
+                (b"-o", user_opt),
                 u"ANSIBLE_REMOTE_USER/remote_user/ansible_user/user/-u set"
             )
 
@@ -921,6 +1022,35 @@ class Connection(ConnectionBase):
         # already been set.
 
         controlpersist, controlpath = self._persistence_controls(b_command)
+
+        if controlpersist and sys.platform == 'win32':
+            # Microsoft OpenSSH for Windows does not support ControlMaster=auto. The
+            # default ssh_common_args has `-o ControlMaster=auto -o ControlPersist=60s`
+            # baked in, so we'd otherwise crash with "Bad configuration option". Strip
+            # those options out and fall through to a new connection per invocation.
+            _stripped = []
+            skip_next = False
+            for b_arg in b_command:
+                if skip_next:
+                    skip_next = False
+                    continue
+                lo = b_arg.lower()
+                if b'controlpersist' in lo or b'controlmaster' in lo or b'controlpath' in lo:
+                    # Skip this token and, if it's a separate `-o` value, the one before.
+                    if _stripped and _stripped[-1] == b'-o':
+                        _stripped.pop()
+                    continue
+                _stripped.append(b_arg)
+            b_command[:] = _stripped
+            if not getattr(Connection, '_windows_controlpersist_warned', False):
+                display.warning(
+                    "ControlMaster/ControlPersist is not supported by OpenSSH for Windows; "
+                    "ssh connections will not be multiplexed. Pass "
+                    "`ssh_common_args=\"\"` to silence this warning."
+                )
+                Connection._windows_controlpersist_warned = True
+            controlpersist = False
+            controlpath = False
 
         if controlpersist:
             self._persistent = True
@@ -1085,12 +1215,27 @@ class Connection(ConnectionBase):
             env['DISPLAY'] = '-'
 
         popen_kwargs['env'] = env
-        # start_new_session runs setsid which detaches the tty to support the use of ASKPASS prior to openssh 8.4
-        popen_kwargs['start_new_session'] = True
+        # start_new_session runs setsid which detaches the tty to support the use of ASKPASS prior to openssh 8.4.
+        # start_new_session is POSIX-only. On Windows, CREATE_NEW_PROCESS_GROUP gives equivalent
+        # signal-group isolation (Ctrl-Break propagation, no CTRL-C inheritance from parent).
+        if sys.platform == 'win32':
+            popen_kwargs['creationflags'] = popen_kwargs.get('creationflags', 0) | subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            popen_kwargs['start_new_session'] = True
 
         return popen_kwargs
 
     def _sshpass_cmd(self) -> list[bytes]:
+        # sshpass relies on os.pipe() + subprocess.Popen(pass_fds=...), which is POSIX-only
+        # (pass_fds is unsupported on Windows, and non-inheritable pipes can't be passed to a
+        # subprocess across the CreateProcess boundary). Fail loudly so users switch to
+        # ssh_askpass or key-based auth on Windows controllers.
+        if sys.platform == 'win32' and self.get_option('password_mechanism') == 'sshpass':
+            raise AnsibleError(
+                "password_mechanism='sshpass' is not supported on a Windows controller. "
+                "Set password_mechanism to 'ssh_askpass' or 'disable' (the default) and "
+                "use key-based authentication or ssh-agent."
+            )
         # If we want to use sshpass for password authentication, we have to set up a pipe to
         # write the password to sshpass.
         conn_password = self.get_option('password') or self._play_context.password
@@ -1147,14 +1292,18 @@ class Connection(ConnectionBase):
             popen_kwargs['pass_fds'] = self.sshpass_pipe
 
         if not in_data:
-            try:
-                # Make sure stdin is a proper pty to avoid tcgetattr errors
-                master, slave = pty.openpty()
-                p = subprocess.Popen(cmd, stdin=slave, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **popen_kwargs)
-                stdin = os.fdopen(master, 'wb', 0)
-                os.close(slave)
-            except OSError:
+            if pty is None:
+                # No pty on this platform (Windows). Skip straight to the pipe path.
                 p = None
+            else:
+                try:
+                    # Make sure stdin is a proper pty to avoid tcgetattr errors
+                    master, slave = pty.openpty()
+                    p = subprocess.Popen(cmd, stdin=slave, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **popen_kwargs)
+                    stdin = os.fdopen(master, 'wb', 0)
+                    os.close(slave)
+                except OSError:
+                    p = None
 
         if not p:
             try:
@@ -1223,14 +1372,8 @@ class Connection(ConnectionBase):
         # they will race each other when we can't connect, and the connect
         # timeout usually fails
         timeout = 2 + self.get_option('timeout')
-        for fd in (p.stdout, p.stderr):
-            fcntl.fcntl(fd, fcntl.F_SETFL, fcntl.fcntl(fd, fcntl.F_GETFL) | os.O_NONBLOCK)
 
-        # TODO: bcoca would like to use SelectSelector() when open
-        # select is faster when filehandles is low and we only ever handle 1.
-        selector = selectors.DefaultSelector()
-        selector.register(p.stdout, selectors.EVENT_READ)
-        selector.register(p.stderr, selectors.EVENT_READ)
+        poller = _PipePoller(p)
 
         # If we can send initial data without waiting for anything, we do so
         # before we start polling
@@ -1241,7 +1384,7 @@ class Connection(ConnectionBase):
         try:
             while True:
                 poll = p.poll()
-                events = selector.select(timeout)
+                events = poller.read_events(timeout)
 
                 # We pay attention to timeouts only while negotiating a prompt.
 
@@ -1260,12 +1403,11 @@ class Connection(ConnectionBase):
                 # Read whatever output is available on stdout and stderr, and stop
                 # listening to the pipe if it's been closed.
 
-                for key, event in events:
-                    if key.fileobj == p.stdout:
-                        b_chunk = p.stdout.read()
+                for name, b_chunk in events:
+                    if name == 'stdout':
                         if b_chunk == b'':
                             # stdout has been closed, stop watching it
-                            selector.unregister(p.stdout)
+                            poller.mark_closed('stdout')
                             # When ssh has ControlMaster (+ControlPath/Persist) enabled, the
                             # first connection goes into the background and we never see EOF
                             # on stderr. If we see EOF on stdout, lower the select timeout
@@ -1276,11 +1418,10 @@ class Connection(ConnectionBase):
                             timeout = 1
                         b_tmp_stdout += b_chunk
                         display.debug(u"stdout chunk (state=%s):\n>>>%s<<<\n" % (state, to_text(b_chunk)))
-                    elif key.fileobj == p.stderr:
-                        b_chunk = p.stderr.read()
+                    elif name == 'stderr':
                         if b_chunk == b'':
                             # stderr has been closed, stop watching it
-                            selector.unregister(p.stderr)
+                            poller.mark_closed('stderr')
                         b_tmp_stderr += b_chunk
                         display.debug("stderr chunk (state=%s):\n>>>%s<<<\n" % (state, to_text(b_chunk)))
 
@@ -1359,7 +1500,7 @@ class Connection(ConnectionBase):
                 # and we've read all available output from it, we're done.
 
                 if poll is not None:
-                    if not selector.get_map() or not events:
+                    if not poller.any_open() or not events:
                         break
                     # We should not see further writes to the stdout/stderr file
                     # descriptors after the process has closed, set the select
@@ -1371,13 +1512,13 @@ class Connection(ConnectionBase):
                 # its stdout and stderr (and thus no longer watching any file
                 # descriptors), we can just wait for it to exit.
 
-                elif not selector.get_map():
+                elif not poller.any_open():
                     p.wait()
                     break
 
                 # Otherwise there may still be outstanding data to read.
         finally:
-            selector.close()
+            poller.close()
             # close stdin, stdout, and stderr after process is terminated and
             # stdout/stderr are read completely (see also issues #848, #64768).
             stdin.close()
