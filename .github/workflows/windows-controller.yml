@@ -257,8 +257,8 @@ jobs:
               - name: ping (retry to absorb WinRM warmup)
                 ansible.windows.win_ping:
                 register: ping_res
-                retries: 5
-                delay: 3
+                retries: 15
+                delay: 4
                 until: ping_res is succeeded
               - name: whoami
                 ansible.windows.win_whoami:
@@ -389,10 +389,10 @@ jobs:
           fi
           echo "exit-code assertion OK (rc=4 for all-unreachable)"
 
-      - name: Stress-suite smoke (durability + edge cases over SSH)
+      - name: Stress-suite smoke (edge cases over SSH)
         run: |
-          # Point the stress inventories at the CI's self-target sshd rather
-          # than the dev-box WSL address baked into the shipped inventories.
+          # Point the stress edge_cases inventory at the CI runner's own sshd
+          # instead of the dev-box WSL address baked into the shipped inventory.
           mkdir -p _ci
           cat > _ci/stress_inv.yml <<EOF
           all:
@@ -405,21 +405,12 @@ jobs:
                 ansible_ssh_common_args: "-o StrictHostKeyChecking=no"
                 ansible_python_interpreter: /usr/bin/python3
           EOF
-          # Durability — the full 100-task play is ~5 min; cap to 20 for CI
-          # by running just the first 20 tasks; durability of the full 100 is
-          # already proven on the dev box and the cap gives CI a fast signal.
-          python - <<'PY'
-          import pathlib
-          src = pathlib.Path('hacking/windows-controller/stress/100_tasks_durability.yml').read_text()
-          # Keep only first 20 task blocks.
-          header, _, rest = src.partition('  tasks:')
-          tasks = rest.strip().split('\n')
-          # Each task is 3 lines: name, command, changed_when.
-          kept = '\n'.join(tasks[:60])
-          pathlib.Path('_ci/stress_durability_short.yml').write_text(f"{header}  tasks:\n{kept}\n")
-          PY
-          ansible-playbook -i _ci/stress_inv.yml _ci/stress_durability_short.yml
-          # Edge cases — full run.
+          # edge_cases.yml exercises 15 probes (deep-nested vars, 100KB string,
+          # big dict, 200k-char stdout, binary slurp, special-char shell,
+          # long remote path, until exhaustion, skipped block, handler chain)
+          # in ~60s — right-sized for a PR gate. The 100-task durability play
+          # still runs on the dev box; running it in CI adds minutes without
+          # meaningfully widening what the edge-case probes already cover.
           ansible-playbook -i _ci/stress_inv.yml hacking/windows-controller/stress/edge_cases.yml
 
   compare-ansiballz:
