@@ -171,6 +171,16 @@ jobs:
           Set-Item WSMan:\localhost\Service\Auth\Basic -Value $true
           Set-Item WSMan:\localhost\Service\AllowUnencrypted -Value $true
           Get-Service WinRM | Select Status,StartType
+          # WinRM can accept the listener config before the HTTP endpoint is
+          # fully ready. Wait until a TCP probe on 5985 succeeds so the first
+          # Ansible task doesn't hit a transient auth 500 and die.
+          for ($i = 0; $i -lt 30; $i++) {
+              try {
+                  $r = Test-NetConnection -ComputerName 127.0.0.1 -Port 5985 -WarningAction SilentlyContinue
+                  if ($r.TcpTestSucceeded) { Write-Host "WinRM HTTP listener ready after $i s"; break }
+              } catch {}
+              Start-Sleep -Seconds 1
+          }
 
       - name: Create a test local account for WinRM
         shell: powershell
@@ -213,8 +223,16 @@ jobs:
           - hosts: winlocal
             gather_facts: false
             tasks:
-              - name: ping
+              # First connect can still race WinRM's credential subsystem right
+              # after Enable-PSRemoting even with the TCP probe in the setup
+              # step. Retry the ping rather than let a transient auth 500 kill
+              # the whole job.
+              - name: ping (retry to absorb WinRM warmup)
                 ansible.windows.win_ping:
+                register: ping_res
+                retries: 5
+                delay: 3
+                until: ping_res is succeeded
               - name: whoami
                 ansible.windows.win_whoami:
               - name: gather minimal facts
