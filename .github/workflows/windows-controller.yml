@@ -131,6 +131,175 @@ jobs:
           name: ansiballz-linux
           path: ansiballz.out
 
+  winrm-self-target:
+    name: WinRM self-target smoke (py${{ matrix.python }})
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.13']
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install ansible-core + WinRM transport
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+          python -m pip install pywinrm pypsrp
+
+      - name: Install ansible.windows collection
+        run: ansible-galaxy collection install ansible.windows
+
+      - name: Enable WinRM on this runner
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Enable-PSRemoting -Force
+          Set-Item WSMan:\localhost\Service\Auth\Basic -Value $true
+          Set-Item WSMan:\localhost\Service\AllowUnencrypted -Value $true
+          Get-Service WinRM | Select Status,StartType
+
+      - name: Create a test local account for WinRM
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pw = ConvertTo-SecureString 'AnsibleCIp@ssw0rd!' -AsPlainText -Force
+          New-LocalUser -Name 'ansibleci' -Password $pw -PasswordNeverExpires -AccountNeverExpires | Out-Null
+          Add-LocalGroupMember -Group 'Administrators' -Member 'ansibleci'
+
+      - name: Write inventory
+        shell: bash
+        run: |
+          mkdir -p _ci
+          cat > _ci/winrm_inv.yml <<'EOF'
+          all:
+            hosts:
+              winlocal:
+                ansible_connection: winrm
+                ansible_host: 127.0.0.1
+                ansible_user: ansibleci
+                ansible_password: "AnsibleCIp@ssw0rd!"
+                ansible_port: 5985
+                ansible_winrm_transport: basic
+                ansible_winrm_scheme: http
+                ansible_winrm_server_cert_validation: ignore
+          EOF
+
+      - name: Write 5-task WinRM playbook
+        shell: bash
+        run: |
+          cat > _ci/winrm_smoke.yml <<'EOF'
+          ---
+          - hosts: winlocal
+            gather_facts: false
+            tasks:
+              - name: ping
+                ansible.windows.win_ping:
+              - name: whoami
+                ansible.windows.win_whoami:
+              - name: gather minimal facts
+                ansible.builtin.setup:
+                  gather_subset: min
+              - name: assert windows
+                ansible.builtin.assert:
+                  that:
+                    - ansible_os_family == 'Windows'
+                    - ansible_hostname is defined
+              - name: final marker
+                ansible.builtin.debug:
+                  msg: "winrm self-target green on {{ ansible_hostname }}"
+          EOF
+
+      - name: Run WinRM smoke playbook
+        shell: bash
+        run: |
+          ansible-playbook -i _ci/winrm_inv.yml _ci/winrm_smoke.yml
+
+  ssh-self-target:
+    name: SSH self-target smoke (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install ansible-core
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Set up sshd on this runner
+        run: |
+          sudo systemctl enable --now ssh
+          ssh-keygen -t ed25519 -f _ci_key -N ''
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          cat _ci_key.pub >> ~/.ssh/authorized_keys
+          chmod 600 ~/.ssh/authorized_keys
+          ssh-keyscan -H 127.0.0.1 >> ~/.ssh/known_hosts
+
+      - name: Write inventory
+        run: |
+          mkdir -p _ci
+          cat > _ci/ssh_inv.yml <<'EOF'
+          all:
+            hosts:
+              sshlocal:
+                ansible_connection: ssh
+                ansible_host: 127.0.0.1
+                ansible_user: runner
+                ansible_ssh_private_key_file: ./_ci_key
+                ansible_ssh_common_args: "-o StrictHostKeyChecking=no"
+                ansible_python_interpreter: /usr/bin/python3
+          EOF
+
+      - name: Write 5-task SSH playbook
+        run: |
+          cat > _ci/ssh_smoke.yml <<'EOF'
+          ---
+          - hosts: sshlocal
+            gather_facts: false
+            tasks:
+              - name: ping
+                ansible.builtin.ping:
+              - name: uname
+                ansible.builtin.command: uname -a
+                changed_when: false
+                register: uname_out
+              - name: assert linux
+                ansible.builtin.assert:
+                  that:
+                    - "'Linux' in uname_out.stdout"
+              - name: templated copy
+                ansible.builtin.copy:
+                  content: "ci-smoke-{{ 999 | random }}"
+                  dest: /tmp/ci_smoke.txt
+                  mode: '0644'
+              - name: slurp + decode + cleanup
+                block:
+                  - ansible.builtin.slurp:
+                      src: /tmp/ci_smoke.txt
+                    register: slurp_out
+                  - ansible.builtin.assert:
+                      that:
+                        - "'ci-smoke-' in (slurp_out.content | b64decode)"
+                  - ansible.builtin.file:
+                      path: /tmp/ci_smoke.txt
+                      state: absent
+          EOF
+
+      - name: Run SSH smoke playbook
+        run: |
+          ansible-playbook -i _ci/ssh_inv.yml _ci/ssh_smoke.yml
+
   compare-ansiballz:
     name: cross-platform AnsiballZ byte-identity
     runs-on: ubuntu-latest
