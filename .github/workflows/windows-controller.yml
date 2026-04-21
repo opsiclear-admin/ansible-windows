@@ -2,9 +2,9 @@ name: windows-controller
 
 on:
   push:
-    branches: [windows-controller]
+    branches: [main, windows-controller]
   pull_request:
-    branches: [windows-controller]
+    branches: [main, windows-controller]
   workflow_dispatch:
 
 jobs:
