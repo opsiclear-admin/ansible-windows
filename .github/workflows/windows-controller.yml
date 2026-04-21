@@ -7,6 +7,12 @@ on:
     branches: [main, windows-controller]
   workflow_dispatch:
 
+# Opt in to Node 24 for JavaScript actions now (the runner will force this in
+# June 2026 and drop Node 20 in Sept 2026). Eliminates the deprecation banner
+# on every step that uses actions/checkout, setup-python, upload/download-artifact.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
 jobs:
   import-smoke:
     name: import smoke (py${{ matrix.python }})
@@ -18,10 +24,10 @@ jobs:
     env:
       PYTHONUTF8: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
 
@@ -53,10 +59,10 @@ jobs:
       matrix:
         python: ['3.12', '3.13']
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
 
@@ -83,8 +89,8 @@ jobs:
       outer_sha256: ${{ steps.hash.outputs.outer_sha256 }}
       inner_sha256: ${{ steps.hash.outputs.inner_sha256 }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
       - name: Install ansible-core (editable)
@@ -99,7 +105,7 @@ jobs:
           echo "outer_sha256=$(grep '^sha256=' ansiballz.out | cut -d= -f2)" >> "$GITHUB_OUTPUT"
           echo "inner_sha256=$(grep '^inner_zip_sha256=' ansiballz.out | cut -d= -f2)" >> "$GITHUB_OUTPUT"
       - name: Upload payload summary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ansiballz-windows
           path: ansiballz.out
@@ -111,8 +117,8 @@ jobs:
       outer_sha256: ${{ steps.hash.outputs.outer_sha256 }}
       inner_sha256: ${{ steps.hash.outputs.inner_sha256 }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
       - name: Install ansible-core (editable)
@@ -126,7 +132,7 @@ jobs:
           echo "outer_sha256=$(grep '^sha256=' ansiballz.out | cut -d= -f2)" >> "$GITHUB_OUTPUT"
           echo "inner_sha256=$(grep '^inner_zip_sha256=' ansiballz.out | cut -d= -f2)" >> "$GITHUB_OUTPUT"
       - name: Upload payload summary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ansiballz-linux
           path: ansiballz.out
@@ -141,10 +147,10 @@ jobs:
     env:
       PYTHONUTF8: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
 
@@ -233,9 +239,9 @@ jobs:
     name: SSH self-target smoke (linux)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
 
@@ -313,7 +319,7 @@ jobs:
     needs: [ansiballz-hash-windows, ansiballz-hash-linux]
     steps:
       - name: Pull summaries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v6
         with:
           path: summaries
       - name: Compare AnsiballZ hashes + member lists
