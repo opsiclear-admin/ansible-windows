@@ -83,6 +83,18 @@ def get_plugin_loader_namespace() -> types.SimpleNamespace:
     return ns
 
 
+# Tracks playbook-adjacent basedirs registered via add_all_plugin_dirs so the
+# spawn-based executor can hand the list off to worker children, which start
+# with a fresh plugin_loader and otherwise lose these paths. Under fork this is
+# redundant — children inherit the full loader state via COW.
+_ADJACENT_PLUGIN_BASEDIRS: list[str] = []
+
+
+def _get_adjacent_plugin_basedirs_snapshot() -> list[str]:
+    """Return a copy of the basedirs previously registered via add_all_plugin_dirs."""
+    return list(_ADJACENT_PLUGIN_BASEDIRS)
+
+
 def add_all_plugin_dirs(path):
     """ add any existing plugin dirs in the path provided """
     b_path = os.path.expanduser(to_bytes(path, errors='surrogate_or_strict'))
@@ -92,6 +104,10 @@ def add_all_plugin_dirs(path):
                 plugin_path = os.path.join(b_path, to_bytes(obj.subdir))
                 if os.path.isdir(plugin_path):
                     obj.add_directory(to_text(plugin_path))
+        # Remember the basedir so spawn children can replay it.
+        path_text = to_text(b_path)
+        if path_text not in _ADJACENT_PLUGIN_BASEDIRS:
+            _ADJACENT_PLUGIN_BASEDIRS.append(path_text)
     else:
         display.warning("Ignoring invalid path provided to plugin path: '%s' is not a directory" % to_text(path))
 

@@ -100,6 +100,12 @@ class WorkerProcess(multiprocessing_context.Process):  # type: ignore[name-defin
 
         self._cliargs = cliargs
 
+        # Snapshot the controller's adjacent plugin-search basedirs (as strings)
+        # so the spawn child can replay them; under fork this is inherited COW
+        # via the plugin_loader globals. See _bootstrap_spawn_child.
+        from ansible.plugins.loader import _get_adjacent_plugin_basedirs_snapshot
+        self._extra_plugin_basedirs = _get_adjacent_plugin_basedirs_snapshot()
+
     def _term(self, signum, frame) -> None:
         """In child termination when notified by the parent"""
         from ansible.compat.posix import killpg
@@ -159,12 +165,19 @@ class WorkerProcess(multiprocessing_context.Process):  # type: ignore[name-defin
         if _context.CLIARGS:
             return  # fork child or already bootstrapped
         from ansible.module_utils.common.collections import is_sequence
-        from ansible.plugins.loader import init_plugin_loader
+        from ansible.plugins.loader import init_plugin_loader, add_all_plugin_dirs
         _context.CLIARGS = self._cliargs
         cli_collections_path = self._cliargs.get('collections_path') or []
         if not is_sequence(cli_collections_path):
             cli_collections_path = [cli_collections_path]
         init_plugin_loader(cli_collections_path)
+        # Replay playbook-adjacent plugin dirs (filter_plugins/, action_plugins/, etc.)
+        # that the CLI registered on the parent before spawning us.
+        for basedir in self._extra_plugin_basedirs:
+            try:
+                add_all_plugin_dirs(basedir)
+            except Exception:
+                pass
 
     def _detach(self) -> None:
         """
