@@ -40,19 +40,38 @@ $env:PYTHONUTF8 = "1"
 ## What works
 
 - `ansible --version`, `ansible-config`, `ansible-inventory`,
-  `ansible-playbook --syntax-check`.
+  `ansible-playbook --syntax-check`, `ansible-galaxy collection install`.
 - Full playbook execution: templated vars, loops over lists/dicts,
   `register`, `when`, `set_fact`, `assert`, `block`/`rescue`/`always`,
   `include_tasks`, `import_playbook`, handlers, `meta: flush_handlers`,
   `free` and `linear` strategies.
 - Multi-host plays with spawn-based workers (picklable
   `WorkerBootstrap` reinitializes plugin loaders in each child).
-- `winrm` and `psrp` connection plugins.
-- `ssh` connection plugin for Linux targets — full module round-trip
-  (setup, copy, slurp, assert, file state, chained tasks).
 - AnsiballZ payloads are **byte-for-byte identical** to those built on
   a Linux controller for the same module inputs (verified in CI for
   `ansible.builtin.ping`).
+
+### End-to-end validated against real targets
+
+**Linux target over SSH** — 10-task playbook against Ubuntu 24.04 in
+WSL2: `ok=10 changed=2 unreachable=0 failed=0`. Exercises ping,
+command, setup (full fact gather), templated copy, slurp, b64decode,
+and file-state management.
+
+**Windows target over WinRM** — 10-task playbook against localhost
+with NTLM auth: `ok=10 changed=2 unreachable=0 failed=0`. Exercises
+`ansible.windows.win_ping`, `win_whoami`, `win_shell`, `win_copy`,
+`win_stat`, `win_file`, and `setup` (picks up
+`ansible_os_family=Windows`, version, etc).
+
+### Connection plugins
+
+| Plugin | State |
+|---|---|
+| `winrm` | Works — auth via Basic, NTLM, Kerberos, CredSSP, certificate (whatever `pywinrm` supports) |
+| `psrp` | Loads cleanly; not individually probed, but runs on the same pywinrm/pypsrp stack |
+| `ssh` | Works for Linux targets. SFTP and SCP both work (local paths auto-normalized `\`→`/`). ControlMaster/ControlPersist is disabled on Windows because Microsoft OpenSSH's AF_UNIX mux socket is unreliable — every task opens a fresh connection, which is slower than POSIX + ControlMaster |
+| `local` | Disabled on a Windows controller — raises a clear error at `_connect` pointing users at `winrm`/`psrp` |
 
 ## What doesn't yet
 
